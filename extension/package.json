@@ -5,7 +5,8 @@
   "description": "Privacy-first mental health triage for youth workers",
   "scripts": {
     "dev": "vite",
-    "build": "tsc && vite build"
+    "build:raw": "tsc && vite build",
+    "build": "npm run build:raw && node ./scripts/flush-redis.mjs"
   },
   "dependencies": {
     "@tensorflow/tfjs": "^4.22.0",

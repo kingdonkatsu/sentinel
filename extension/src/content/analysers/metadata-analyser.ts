@@ -106,19 +106,23 @@ export class MetadataAnalyser implements Analyser {
   }
 
   private detectReplyDisabled(viewer: HTMLElement): boolean {
-    // Instagram hides the reply input when replies are disabled
-    const replyInput = viewer.querySelector(
-      'input[placeholder*="Reply"], textarea[placeholder*="Reply"], [aria-label*="Reply"]'
+    // Treat reply-disabled as an explicit signal only. Many story variants
+    // simply omit the composer, and assuming that means "disabled" is noisy.
+    const replyArea = viewer.querySelector(
+      '[data-testid="reply-composer"], [aria-label*="Reply"], input[placeholder*="Reply"], textarea[placeholder*="Reply"]'
     );
-    if (!replyInput) return true; // no reply box = likely disabled
-
-    // Or if the reply area is explicitly marked as disabled
-    const replyArea = viewer.querySelector('[data-testid="reply-composer"]');
-    if (replyArea && replyArea.getAttribute("aria-disabled") === "true") {
+    if (
+      replyArea instanceof HTMLElement &&
+      replyArea.getAttribute("aria-disabled") === "true"
+    ) {
       return true;
     }
 
-    return false;
+    const textContent = viewer.textContent?.toLowerCase() ?? "";
+    return (
+      textContent.includes("replies are turned off") ||
+      textContent.includes("cannot reply to this story")
+    );
   }
 
   private detectMusicOverlay(viewer: HTMLElement): boolean {

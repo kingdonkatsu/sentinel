@@ -37,6 +37,10 @@ export default function AccountDetailPage() {
     }
   }
 
+  function renderScore(score: number | null) {
+    return score ?? "\u2014";
+  }
+
   if (isLoading) {
     return (
       <div className="flex items-center justify-center h-64">
@@ -128,13 +132,13 @@ export default function AccountDetailPage() {
           </div>
           <div className="text-center">
             <div className="text-2xl font-bold text-blue-400">
-              {account.latest_text_score}
+              {renderScore(account.latest_text_score)}
             </div>
             <div className="text-xs text-slate-500 mt-1">Text Score</div>
           </div>
           <div className="text-center">
             <div className="text-2xl font-bold text-purple-400">
-              {account.latest_image_score}
+              {renderScore(account.latest_image_score)}
             </div>
             <div className="text-xs text-slate-500 mt-1">Image Score</div>
           </div>
@@ -147,8 +151,8 @@ export default function AccountDetailPage() {
       {/* AI Outreach Suggestions */}
       <OutreachCard
         compositeScore={account.latest_composite}
-        textScore={account.latest_text_score}
-        imageScore={account.latest_image_score}
+        textScore={account.latest_text_score ?? 50}
+        imageScore={account.latest_image_score ?? 50}
       />
 
       {/* Case Notes */}

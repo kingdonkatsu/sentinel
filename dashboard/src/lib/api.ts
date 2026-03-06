@@ -5,16 +5,16 @@ export interface AccountSummary {
   latest_composite: number;
   max_composite: number;
   score_count: number;
-  latest_text_score: number;
-  latest_image_score: number;
+  latest_text_score: number | null;
+  latest_image_score: number | null;
   last_seen: number;
   trend: string;
 }
 
 export interface ScoreDetail {
   composite: number;
-  text_score: number;
-  image_score: number;
+  text_score: number | null;
+  image_score: number | null;
   timestamp: number;
 }
 

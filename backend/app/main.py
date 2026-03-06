@@ -3,7 +3,7 @@ import json
 from contextlib import asynccontextmanager
 
 import redis.asyncio as redis
-from fastapi import FastAPI, Header, HTTPException, Request
+from fastapi import FastAPI, Header, HTTPException, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 
@@ -20,7 +20,7 @@ async def lifespan(app: FastAPI):
     cleanup_task = asyncio.create_task(cleanup_stale_accounts(app.state.redis))
     yield
     cleanup_task.cancel()
-    await app.state.redis.close()
+    await app.state.redis.aclose()
 
 
 app = FastAPI(title="Sentinel API", version="0.1.0", lifespan=lifespan)
@@ -107,9 +107,11 @@ async def score_feed(request: Request):
 
 
 @app.post("/api/v1/outreach/suggest", response_model=OutreachResponse)
-async def suggest_outreach(request: OutreachRequest):
+async def suggest_outreach(request: OutreachRequest, response: Response):
     service = OutreachService()
-    return await service.generate(request)
+    result = await service.generate_with_provider(request)
+    response.headers["X-Sentinel-Outreach-Provider"] = result.provider
+    return result.response
 
 
 @app.post("/api/v1/accounts/{username}/confirm")

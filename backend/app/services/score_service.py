@@ -25,10 +25,12 @@ class ScoreService:
         score_key = f"score:{username}:{ts}"
         mapping: dict = {
             "composite": payload.composite_score,
-            "text": payload.text_score,
-            "image": payload.image_score,
             "timestamp": ts,
         }
+        if payload.text_score is not None:
+            mapping["text"] = payload.text_score
+        if payload.image_score is not None:
+            mapping["image"] = payload.image_score
         if payload.modality_scores:
             mapping["modality_scores"] = json.dumps(payload.modality_scores)
 
@@ -49,24 +51,34 @@ class ScoreService:
         account_mapping: dict = {
             "username": username,
             "latest_composite": payload.composite_score,
-            "latest_text": payload.text_score,
-            "latest_image": payload.image_score,
             "last_seen": ts,
         }
+        if payload.text_score is not None:
+            account_mapping["latest_text"] = payload.text_score
+        if payload.image_score is not None:
+            account_mapping["latest_image"] = payload.image_score
         if payload.modality_scores:
             account_mapping["latest_modality_scores"] = json.dumps(payload.modality_scores)
 
         await self.redis.hset(account_key, mapping=account_mapping)
+        if payload.text_score is None:
+            await self.redis.hdel(account_key, "latest_text")
+        if payload.image_score is None:
+            await self.redis.hdel(account_key, "latest_image")
         await self.redis.hincrby(account_key, "score_count", 1)
         await self.redis.expire(account_key, TWENTY_FOUR_HOURS)
 
-        await self.redis.xadd("stream:scores", {
+        stream_payload = {
             "username": username,
             "composite": str(payload.composite_score),
-            "text": str(payload.text_score),
-            "image": str(payload.image_score),
-            "timestamp": str(ts),
-        }, maxlen=1000)
+        }
+        if payload.text_score is not None:
+            stream_payload["text"] = str(payload.text_score)
+        if payload.image_score is not None:
+            stream_payload["image"] = str(payload.image_score)
+        stream_payload["timestamp"] = str(ts)
+
+        await self.redis.xadd("stream:scores", stream_payload, maxlen=1000)
 
     async def confirm_case(self, username: str) -> None:
         """Record a social worker confirmation for calibration feedback."""
@@ -139,13 +151,19 @@ class ScoreService:
                 val = data.get(key.encode() if isinstance(member_raw, bytes) else key, 0)
                 return int(val)
 
+            def g_optional(key: str) -> int | None:
+                val = data.get(key.encode() if isinstance(member_raw, bytes) else key)
+                if val is None:
+                    return None
+                return int(val)
+
             summaries.append(AccountSummary(
                 username=username,
                 latest_composite=g("latest_composite"),
                 max_composite=int(max_score),
                 score_count=g("score_count"),
-                latest_text_score=g("latest_text"),
-                latest_image_score=g("latest_image"),
+                latest_text_score=g_optional("latest_text"),
+                latest_image_score=g_optional("latest_image"),
                 last_seen=g("last_seen"),
                 trend=await self._compute_trend(username),
             ))
@@ -163,6 +181,12 @@ class ScoreService:
             val = data.get(key.encode(), data.get(key, 0))
             return int(val)
 
+        def g_optional(key: str) -> int | None:
+            val = data.get(key.encode(), data.get(key))
+            if val is None:
+                return None
+            return int(val)
+
         scores_list_key = f"scores_list:{username}"
         timestamps = await self.redis.zrange(scores_list_key, 0, -1)
 
@@ -176,10 +200,16 @@ class ScoreService:
                     val = score_data.get(key.encode(), score_data.get(key, 0))
                     return int(val)
 
+                def gs_optional(key: str) -> int | None:
+                    val = score_data.get(key.encode(), score_data.get(key))
+                    if val is None:
+                        return None
+                    return int(val)
+
                 scores.append(ScoreDetail(
                     composite=gs("composite"),
-                    text_score=gs("text"),
-                    image_score=gs("image"),
+                    text_score=gs_optional("text"),
+                    image_score=gs_optional("image"),
                     timestamp=gs("timestamp"),
                 ))
 
@@ -190,8 +220,8 @@ class ScoreService:
             latest_composite=g("latest_composite"),
             max_composite=int(max_score) if max_score else g("latest_composite"),
             score_count=g("score_count"),
-            latest_text_score=g("latest_text"),
-            latest_image_score=g("latest_image"),
+            latest_text_score=g_optional("latest_text"),
+            latest_image_score=g_optional("latest_image"),
             last_seen=g("last_seen"),
             trend=await self._compute_trend(username),
             scores=scores,

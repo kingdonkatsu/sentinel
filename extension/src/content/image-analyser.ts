@@ -48,6 +48,38 @@ export function analyseImage(imageData: ImageData): number {
   return Math.max(0, Math.min(100, Math.round(score)));
 }
 
+export function findPrimaryStoryMedia(
+  viewer: HTMLElement
+): HTMLImageElement | HTMLVideoElement | null {
+  const mediaElements = Array.from(
+    viewer.querySelectorAll("video, img[src]")
+  ).filter((el): el is HTMLImageElement | HTMLVideoElement => {
+    if (el instanceof HTMLImageElement) {
+      return (
+        el.complete &&
+        el.naturalWidth > 0 &&
+        isLargeEnough(el) &&
+        isRenderable(el)
+      );
+    }
+    return (
+      el instanceof HTMLVideoElement &&
+      el.readyState >= 2 &&
+      el.videoWidth > 0 &&
+      el.videoHeight > 0 &&
+      isLargeEnough(el) &&
+      isRenderable(el)
+    );
+  });
+
+  if (mediaElements.length === 0) {
+    return null;
+  }
+
+  mediaElements.sort((a, b) => renderPriority(b) - renderPriority(a));
+  return mediaElements[0] ?? null;
+}
+
 /**
  * Captures image data from a Story viewer element.
  * Returns a 224x224 ImageData suitable for analysis.
@@ -55,10 +87,7 @@ export function analyseImage(imageData: ImageData): number {
 export async function captureStoryImage(
   viewer: HTMLElement
 ): Promise<ImageData | null> {
-  const img = viewer.querySelector(
-    'img[draggable="false"]'
-  ) as HTMLImageElement | null;
-  const video = viewer.querySelector("video") as HTMLVideoElement | null;
+  const media = findPrimaryStoryMedia(viewer);
 
   const canvas = document.createElement("canvas");
   canvas.width = 224;
@@ -67,16 +96,119 @@ export async function captureStoryImage(
   if (!ctx) return null;
 
   try {
-    if (img && img.complete && img.naturalWidth > 0) {
-      ctx.drawImage(img, 0, 0, 224, 224);
-    } else if (video && video.readyState >= 2) {
-      ctx.drawImage(video, 0, 0, 224, 224);
+    if (media instanceof HTMLImageElement) {
+      ctx.drawImage(media, 0, 0, 224, 224);
+    } else if (media instanceof HTMLVideoElement) {
+      ctx.drawImage(media, 0, 0, 224, 224);
     } else {
       return null;
     }
     return ctx.getImageData(0, 0, 224, 224);
   } catch {
-    // Cross-origin image — fall back to simulated score
+    if (media instanceof HTMLImageElement) {
+      const remoteImageData = await captureRemoteImage(media);
+      if (remoteImageData) {
+        return remoteImageData;
+      }
+    }
+
+    return null;
+  } finally {
+    canvas.remove();
+  }
+}
+
+function isLargeEnough(element: HTMLElement): boolean {
+  const rect = element.getBoundingClientRect();
+  return rect.width >= 80 && rect.height >= 80;
+}
+
+function isRenderable(element: HTMLElement): boolean {
+  const rect = element.getBoundingClientRect();
+  if (rect.width < 1 || rect.height < 1) {
+    return false;
+  }
+
+  const style = window.getComputedStyle(element);
+  if (
+    style.display === "none" ||
+    style.visibility === "hidden" ||
+    Number.parseFloat(style.opacity || "1") < 0.05
+  ) {
+    return false;
+  }
+
+  const intersectionWidth =
+    Math.min(rect.right, window.innerWidth) - Math.max(rect.left, 0);
+  const intersectionHeight =
+    Math.min(rect.bottom, window.innerHeight) - Math.max(rect.top, 0);
+
+  return intersectionWidth > 24 && intersectionHeight > 24;
+}
+
+function renderPriority(element: HTMLElement): number {
+  const rect = element.getBoundingClientRect();
+  const intersectionWidth = Math.max(
+    0,
+    Math.min(rect.right, window.innerWidth) - Math.max(rect.left, 0)
+  );
+  const intersectionHeight = Math.max(
+    0,
+    Math.min(rect.bottom, window.innerHeight) - Math.max(rect.top, 0)
+  );
+  const visibleArea = intersectionWidth * intersectionHeight;
+
+  const centerX = rect.left + rect.width / 2;
+  const centerY = rect.top + rect.height / 2;
+  const viewportCenterX = window.innerWidth / 2;
+  const viewportCenterY = window.innerHeight / 2;
+  const distancePenalty =
+    Math.abs(centerX - viewportCenterX) + Math.abs(centerY - viewportCenterY);
+
+  return visibleArea - distancePenalty;
+}
+
+async function captureRemoteImage(
+  image: HTMLImageElement
+): Promise<ImageData | null> {
+  const source = image.currentSrc || image.src;
+  if (!source) {
+    return null;
+  }
+
+  try {
+    const response = (await chrome.runtime.sendMessage({
+      type: "FETCH_MEDIA_BYTES",
+      url: source,
+    })) as
+      | { ok: true; bytes: ArrayBuffer; contentType: string }
+      | { ok: false; error?: string };
+
+    if (!response?.ok || !(response.bytes instanceof ArrayBuffer)) {
+      return null;
+    }
+
+    const blob = new Blob([response.bytes], {
+      type: response.contentType || "image/jpeg",
+    });
+    const bitmap = await createImageBitmap(blob);
+
+    const canvas = document.createElement("canvas");
+    canvas.width = 224;
+    canvas.height = 224;
+    const ctx = canvas.getContext("2d");
+    if (!ctx) {
+      bitmap.close();
+      canvas.remove();
+      return null;
+    }
+
+    ctx.drawImage(bitmap, 0, 0, 224, 224);
+    const imageData = ctx.getImageData(0, 0, 224, 224);
+    bitmap.close();
+    canvas.remove();
+    return imageData;
+  } catch {
     return null;
   }
 }

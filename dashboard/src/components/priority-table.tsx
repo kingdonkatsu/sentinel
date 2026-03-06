@@ -63,6 +63,10 @@ export function PriorityTable() {
     );
   }
 
+  function renderScore(score: number | null) {
+    return score ?? "\u2014";
+  }
+
   return (
     <div className="space-y-3">
       {accounts.map((account, index) => (
@@ -103,13 +107,13 @@ export function PriorityTable() {
             <div className="text-center">
               <div className="text-slate-500 mb-0.5">Text</div>
               <div className="font-semibold text-slate-300">
-                {account.latest_text_score}
+                {renderScore(account.latest_text_score)}
               </div>
             </div>
             <div className="text-center">
               <div className="text-slate-500 mb-0.5">Image</div>
               <div className="font-semibold text-slate-300">
-                {account.latest_image_score}
+                {renderScore(account.latest_image_score)}
               </div>
             </div>
           </div>

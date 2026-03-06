@@ -46,7 +46,7 @@ A privacy-first mental health detection tool for youth social workers. Monitors 
 ## Current Status
 
 ### ✅ Fully Working
-- Backend API (all 8 endpoints tested)
+- Backend API (13 integration tests passing; live OpenAI still requires `OPENAI_API_KEY` for manual verification)
 - Redis data storage with 24h TTL
 - Worker dashboard with real-time updates and Confirm Case button
 - AI outreach generation (OpenAI + offline fallback)
@@ -57,9 +57,11 @@ A privacy-first mental health detection tool for youth social workers. Monitors 
 - Chrome extension (compiles cleanly, not tested on Instagram)
 - Instagram Story detection (DOM selectors may need adjustment)
 - Image/video capture (likely blocked by CORS — visual emotion falls back to colour histogram)
+- Story scoring still needs debugging; results are inconsistent and can collapse to the same score across different stories or users
 
 ### 🔴 Known Limitations
 - Extension won't work on Instagram without testing/debugging DOM selectors
+- Scoring is not production-ready yet; repeated identical composites still appear after the first analysed story in some runs
 - ML models not bundled (must be downloaded separately — ~13MB)
 - Audio modality intentionally skipped (Instagram CORS blocks audio streams; visual catches same signals)
 - Simple API key auth (not JWT)
@@ -251,7 +253,7 @@ sentinel/
 | GET | `/api/v1/dashboard` | None | Get prioritized account list |
 | GET | `/api/v1/dashboard/{username}` | None | Get account detail + score history |
 | GET | `/api/v1/scores/feed` | None | SSE stream for real-time updates |
-| POST | `/api/v1/outreach/suggest` | None | Generate AI conversation starters |
+| POST | `/api/v1/outreach/suggest` | None | Generate AI conversation starters (`X-Sentinel-Outreach-Provider: openai|fallback`) |
 | POST | `/api/v1/accounts/{username}/confirm` | API key | Record social worker confirmation (calibration) |
 | GET | `/api/v1/confirmations` | API key | Get confirmations since timestamp (?since=ms_epoch) |
 | GET | `/api/v1/health` | None | Health check |
@@ -338,6 +340,7 @@ canvas.remove();          // Remove DOM element
 - [x] Account detail view
 - [x] SSE stream connects
 - [x] AI outreach generation
+- [x] Outreach provider header (`openai|fallback`)
 - [x] 24h TTL purge (Redis EXPIRE)
 - [x] Confirm case endpoint
 - [x] Get confirmations endpoint
@@ -362,6 +365,27 @@ canvas.remove();          // Remove DOM element
 
 ---
 
+## AI Backend Verification
+
+### Automated
+- Start Redis with `docker compose up -d redis`
+- Run backend tests with `cd backend && pytest tests -q -p no:cacheprovider`
+- Current automated coverage includes score ingestion, dashboard/detail retrieval, SSE, confirm flow, confirmation polling, fallback outreach, mocked OpenAI success, and OpenAI failure fallback logging
+
+### Manual Fallback Check
+- Leave `OPENAI_API_KEY` blank in `backend/.env`
+- Start the backend and call `POST /api/v1/outreach/suggest`
+- Expect the response header `X-Sentinel-Outreach-Provider: fallback`
+
+### Manual Live OpenAI Check
+- Set `OPENAI_API_KEY=sk-...` in `backend/.env`
+- Restart `uvicorn`
+- Call `POST /api/v1/outreach/suggest`
+- Expect the response header `X-Sentinel-Outreach-Provider: openai`
+- Hard-refresh the dashboard account page before re-checking outreach suggestions because the card caches for 5 minutes
+
+---
+
 ## Important Configuration
 
 ### Extension Popup Settings
@@ -379,6 +403,8 @@ API_KEY=sentinel-hackathon-key
 OPENAI_API_KEY=sk-your-key-here
 DASHBOARD_URL=http://localhost:3000
 ```
+
+If `OPENAI_API_KEY` is blank, the outreach endpoint still works but returns the offline fallback copy and `X-Sentinel-Outreach-Provider: fallback`.
 
 **Dashboard (.env.local):**
 ```

@@ -70,6 +70,7 @@ export function ScoreChart({ scores }: ScoreChartProps) {
             strokeWidth={1.5}
             dot={{ r: 2 }}
             name="Text"
+            connectNulls={false}
           />
           <Line
             type="monotone"
@@ -78,6 +79,7 @@ export function ScoreChart({ scores }: ScoreChartProps) {
             strokeWidth={1.5}
             dot={{ r: 2 }}
             name="Image"
+            connectNulls={false}
           />
         </LineChart>
       </ResponsiveContainer>

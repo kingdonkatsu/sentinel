@@ -18,7 +18,11 @@
  */
 
 import type { Analyser, ModalityResult } from "../../shared/types";
-import { analyseImage, captureStoryImage } from "../image-analyser";
+import {
+  analyseImage,
+  captureStoryImage,
+  findPrimaryStoryMedia,
+} from "../image-analyser";
 import { zeroImageData, destroyCanvas } from "../privacy/secure-cleanup";
 import type * as FaceApiType from "@vladmandic/face-api";
 
@@ -67,12 +71,7 @@ export class VisualEmotionAnalyser implements Analyser {
   readonly modality = "visual" as const;
 
   isAvailable(viewer: HTMLElement): boolean {
-    const img = viewer.querySelector('img[draggable="false"]') as HTMLImageElement | null;
-    const video = viewer.querySelector("video") as HTMLVideoElement | null;
-    return (
-      (img !== null && img.complete && img.naturalWidth > 0) ||
-      (video !== null && video.readyState >= 2)
-    );
+    return findPrimaryStoryMedia(viewer) !== null;
   }
 
   async analyse(viewer: HTMLElement): Promise<ModalityResult> {
@@ -88,21 +87,31 @@ export class VisualEmotionAnalyser implements Analyser {
         return this.unavailableResult(performance.now() - t0);
       }
 
+      const heuristicScore = analyseImage(imageData);
+
       // Attempt ML-based scoring
       const mlResult = await this.scoreWithFaceApi(imageData, canvas);
       if (mlResult !== null) {
+        const mlWeight = mlResult.faceCount >= 2 ? 0.5 : 0.7;
+        const blendedScore = Math.round(
+          mlResult.score * mlWeight + heuristicScore * (1 - mlWeight)
+        );
+        const blendedConfidence =
+          Math.abs(mlResult.score - heuristicScore) >= 30
+            ? Math.max(0.55, mlResult.confidence - 0.1)
+            : mlResult.confidence;
+
         zeroImageData(imageData);
         return {
           modality: "visual",
-          score: mlResult.score,
-          confidence: mlResult.confidence,
+          score: blendedScore,
+          confidence: blendedConfidence,
           available: true,
           inferenceTimeMs: performance.now() - t0,
         };
       }
 
       // Fallback: colour histogram heuristic
-      const heuristicScore = analyseImage(imageData);
       zeroImageData(imageData);
       return {
         modality: "visual",
@@ -119,7 +128,7 @@ export class VisualEmotionAnalyser implements Analyser {
   private async scoreWithFaceApi(
     imageData: ImageData,
     canvas: HTMLCanvasElement
-  ): Promise<{ score: number; confidence: number } | null> {
+  ): Promise<{ score: number; confidence: number; faceCount: number } | null> {
     const faceapi = await loadFaceApi();
     if (!faceapi) return null;
 
@@ -133,24 +142,39 @@ export class VisualEmotionAnalyser implements Analyser {
 
       if (!detections.length) return null;
 
-      // Use the detection with highest confidence face score
-      const best = detections.reduce((a, b) =>
-        a.detection.score > b.detection.score ? a : b
-      );
+      let weightedRiskSum = 0;
+      let weightedMaxProbSum = 0;
+      let weightTotal = 0;
 
-      const expressions = best.expressions as unknown as Record<string, number>;
+      for (const detection of detections) {
+        const expressions =
+          detection.expressions as unknown as Record<string, number>;
+        const box = detection.detection.box;
+        const faceWeight =
+          Math.max(1, box.width * box.height) * detection.detection.score;
 
-      let riskScore = 0;
-      let maxProb = 0;
-      for (const [label, prob] of Object.entries(expressions)) {
-        const weight = EXPRESSION_RISK_WEIGHTS[label] ?? 0;
-        riskScore += prob * weight;
-        if (prob > maxProb) maxProb = prob;
+        let faceRisk = 0;
+        let faceMaxProb = 0;
+        for (const [label, prob] of Object.entries(expressions)) {
+          const weight = EXPRESSION_RISK_WEIGHTS[label] ?? 0;
+          faceRisk += prob * weight;
+          if (prob > faceMaxProb) faceMaxProb = prob;
+        }
+
+        weightedRiskSum += faceRisk * faceWeight;
+        weightedMaxProbSum += faceMaxProb * faceWeight;
+        weightTotal += faceWeight;
       }
 
+      if (weightTotal === 0) return null;
+
+      const averageRisk = weightedRiskSum / weightTotal;
+      const averageMaxProb = weightedMaxProbSum / weightTotal;
+
       return {
-        score: Math.round(Math.min(100, riskScore * 100)),
-        confidence: Math.min(0.9, 0.6 + maxProb * 0.3),
+        score: Math.round(Math.min(100, averageRisk * 100)),
+        confidence: Math.min(0.9, 0.58 + averageMaxProb * 0.27),
+        faceCount: detections.length,
       };
     } catch {
       return null;

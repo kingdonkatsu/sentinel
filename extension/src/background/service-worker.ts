@@ -32,6 +32,13 @@ chrome.runtime.onStartup.addListener(() => {
 // ── Alarms (MV3 safe periodic task) ───────────────────────────────────────
 
 async function scheduleConfirmationPoll(): Promise<void> {
+  if (!chrome.alarms) {
+    console.warn(
+      "[Sentinel] chrome.alarms API unavailable; confirmation polling disabled"
+    );
+    return;
+  }
+
   // Minimum period in MV3 is 1 minute
   await chrome.alarms.create(CONFIRMATION_POLL_ALARM, {
     periodInMinutes: 1,
@@ -39,11 +46,17 @@ async function scheduleConfirmationPoll(): Promise<void> {
   });
 }
 
-chrome.alarms.onAlarm.addListener((alarm) => {
-  if (alarm.name === CONFIRMATION_POLL_ALARM) {
-    void pollConfirmations();
-  }
-});
+if (chrome.alarms) {
+  chrome.alarms.onAlarm.addListener((alarm) => {
+    if (alarm.name === CONFIRMATION_POLL_ALARM) {
+      void pollConfirmations();
+    }
+  });
+} else {
+  console.warn(
+    "[Sentinel] chrome.alarms API unavailable; confirmation polling disabled"
+  );
+}
 
 async function pollConfirmations(): Promise<void> {
   const config = await getStoredConfig();
@@ -136,6 +149,16 @@ async function handleMessage(
         return;
       }
 
+      case "FETCH_MEDIA_BYTES": {
+        if (!isFetchMediaBytesMessage(message)) {
+          sendResponse({ ok: false, error: "Invalid media fetch payload" });
+          return;
+        }
+        const result = await fetchMediaBytes(message.url);
+        sendResponse(result);
+        return;
+      }
+
       default:
         sendResponse({ ok: false, error: "Unsupported message type" });
     }
@@ -158,11 +181,16 @@ async function submitScore(
   }
 
   try {
+    const apiUrl = `${config.sentinel_api_url}/api/v1/scores`;
+    const hasTextScore = typeof modalityScores?.text === "number";
+    const hasImageScore =
+      typeof modalityScores?.visual === "number" ||
+      typeof modalityScores?.video === "number";
     const body: Record<string, unknown> = {
       username: score.username,
       composite_score: score.composite,
-      text_score: score.textScore,
-      image_score: score.imageScore,
+      text_score: hasTextScore ? score.textScore : null,
+      image_score: hasImageScore ? score.imageScore : null,
       timestamp: score.timestamp,
     };
 
@@ -170,16 +198,45 @@ async function submitScore(
       body.modality_scores = modalityScores;
     }
 
-    const response = await fetch(`${config.sentinel_api_url}/api/v1/scores`, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "X-Sentinel-Key": config.sentinel_api_key,
-      },
-      body: JSON.stringify(body),
-    });
+    let response = await postScore(apiUrl, config.sentinel_api_key, body);
+    let errorBody = response.ok
+      ? ""
+      : await response.text().catch(() => "");
+
+    const needsLegacyRetry =
+      response.status === 422 &&
+      (!hasTextScore || !hasImageScore);
+
+    if (needsLegacyRetry) {
+      const legacyBody: Record<string, unknown> = {
+        ...body,
+        text_score: hasTextScore ? score.textScore : 50,
+        image_score: hasImageScore ? score.imageScore : 50,
+      };
+
+      console.warn(
+        "[Sentinel] Backend rejected nullable sub-scores; retrying with legacy neutral placeholders",
+        {
+          apiUrl,
+          username: score.username,
+          status: response.status,
+          errorBody,
+        }
+      );
+
+      response = await postScore(apiUrl, config.sentinel_api_key, legacyBody);
+      errorBody = response.ok
+        ? ""
+        : await response.text().catch(() => "");
+    }
 
     if (!response.ok) {
+      console.warn("[Sentinel] Backend score submit failed", {
+        apiUrl,
+        username: score.username,
+        status: response.status,
+        errorBody,
+      });
       return {
         ok: false,
         status: response.status,
@@ -187,12 +244,38 @@ async function submitScore(
       };
     }
 
+    console.log("[Sentinel] Backend score submitted", {
+      apiUrl,
+      username: score.username,
+      status: response.status,
+    });
+
     return { ok: true, status: response.status };
   } catch (error) {
     const messageText =
       error instanceof Error ? error.message : "Failed to reach backend";
+    console.warn("[Sentinel] Backend score submit threw", {
+      apiUrl: `${config.sentinel_api_url}/api/v1/scores`,
+      username: score.username,
+      error: messageText,
+    });
     return { ok: false, error: messageText };
   }
+}
+
+async function postScore(
+  apiUrl: string,
+  apiKey: string,
+  body: Record<string, unknown>
+): Promise<Response> {
+  return fetch(apiUrl, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "X-Sentinel-Key": apiKey,
+    },
+    body: JSON.stringify(body),
+  });
 }
 
 async function pingApi(): Promise<TransmissionResult> {
@@ -211,6 +294,39 @@ async function pingApi(): Promise<TransmissionResult> {
   } catch (error) {
     const messageText =
       error instanceof Error ? error.message : "API ping failed";
+    return { ok: false, error: messageText };
+  }
+}
+
+async function fetchMediaBytes(
+  url: string
+): Promise<
+  | { ok: true; bytes: ArrayBuffer; contentType: string }
+  | { ok: false; error: string; status?: number }
+> {
+  try {
+    const response = await fetch(url, {
+      method: "GET",
+      credentials: "omit",
+      cache: "no-store",
+    });
+
+    if (!response.ok) {
+      return {
+        ok: false,
+        status: response.status,
+        error: `Media fetch returned ${response.status}`,
+      };
+    }
+
+    const bytes = await response.arrayBuffer();
+    const contentType =
+      response.headers.get("content-type") || "application/octet-stream";
+
+    return { ok: true, bytes, contentType };
+  } catch (error) {
+    const messageText =
+      error instanceof Error ? error.message : "Failed to fetch media bytes";
     return { ok: false, error: messageText };
   }
 }
@@ -268,4 +384,10 @@ function isSubmitScoreMessage(
     typeof score.imageScore === "number" &&
     typeof score.timestamp === "number"
   );
+}
+
+function isFetchMediaBytesMessage(
+  message: { type: unknown; [key: string]: unknown }
+): message is { type: "FETCH_MEDIA_BYTES"; url: string } {
+  return typeof message.url === "string" && message.url.length > 0;
 }

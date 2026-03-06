@@ -32,6 +32,26 @@ const POSITIVE_KEYWORDS: Record<string, number> = {
   good: 1, nice: 1, okay: 1, fine: 1, cool: 1, chill: 1,
 };
 
+const UI_TEXT_PATTERNS = [
+  /^sponsored$/i,
+  /^paid partnership$/i,
+  /^learn more$/i,
+  /^shop now$/i,
+  /^sign up$/i,
+  /^download$/i,
+  /^install now$/i,
+  /^book now$/i,
+  /^get quote$/i,
+  /^order now$/i,
+  /^watch more$/i,
+  /^apply now$/i,
+  /^contact us$/i,
+  /^visit site$/i,
+  /^see more$/i,
+  /^reply$/i,
+  /^send message$/i,
+];
+
 export function analyseText(text: string): number {
   if (!text || text.trim().length === 0) {
     return 50; // Neutral when no text present
@@ -75,7 +95,33 @@ export function extractText(viewer: HTMLElement): string {
     'span[dir="auto"], div[dir="auto"]'
   );
   return Array.from(textElements)
+    .filter((el) => isVisibleTextElement(el as HTMLElement))
+    .filter((el) => !el.closest("button, a[role='button'], [role='button']"))
     .map((el) => el.textContent?.trim() || "")
+    .filter((text) => !UI_TEXT_PATTERNS.some((pattern) => pattern.test(text)))
     .filter((t) => t.length > 0)
     .join(" ");
+}
+
+function isVisibleTextElement(element: HTMLElement): boolean {
+  const rect = element.getBoundingClientRect();
+  if (rect.width < 1 || rect.height < 1) {
+    return false;
+  }
+
+  const style = window.getComputedStyle(element);
+  if (
+    style.display === "none" ||
+    style.visibility === "hidden" ||
+    Number.parseFloat(style.opacity || "1") < 0.05
+  ) {
+    return false;
+  }
+
+  const intersectionWidth =
+    Math.min(rect.right, window.innerWidth) - Math.max(rect.left, 0);
+  const intersectionHeight =
+    Math.min(rect.bottom, window.innerHeight) - Math.max(rect.top, 0);
+
+  return intersectionWidth > 8 && intersectionHeight > 8;
 }

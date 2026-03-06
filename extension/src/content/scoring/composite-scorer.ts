@@ -75,7 +75,8 @@ export class CompositeScorer {
     const overallConfidence =
       available.reduce((sum, r) => sum + r.confidence, 0) / available.length;
     if (overallConfidence < 0.5) {
-      composite = composite * (0.5 + overallConfidence);
+      const midpointPull = 0.5 + overallConfidence;
+      composite = 50 + (composite - 50) * midpointPull;
     }
 
     // Step 5: critical signal override

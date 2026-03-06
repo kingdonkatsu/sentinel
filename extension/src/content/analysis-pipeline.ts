@@ -117,6 +117,18 @@ export class AnalysisPipeline {
       weights: Object.fromEntries(
         Object.entries(effectiveWeights).map(([k, v]) => [k, (v ?? 0).toFixed(3)])
       ),
+      drivers: modalityResults
+        .filter((r) => r.available)
+        .map((r) => ({
+          modality: r.modality,
+          deltaFromNeutral: Math.round(
+            (r.score - 50) * (effectiveWeights[r.modality] ?? 0)
+          ),
+          score: r.score,
+          confidence: r.confidence,
+        }))
+        .sort((a, b) => Math.abs(b.deltaFromNeutral) - Math.abs(a.deltaFromNeutral))
+        .slice(0, 3),
     });
 
     // ── Show overlay and transmit ─────────────────────────────────────────

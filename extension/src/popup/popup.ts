@@ -13,7 +13,7 @@ const pingBtn = document.getElementById("pingBtn") as HTMLButtonElement;
 const analyseBtn = document.getElementById("analyseBtn") as HTMLButtonElement;
 const statusEl = document.getElementById("status") as HTMLElement;
 
-void loadConfig();
+void initialisePopup();
 
 thresholdInput.addEventListener("input", () => {
   thresholdValue.textContent = thresholdInput.value;
@@ -22,28 +22,42 @@ thresholdInput.addEventListener("input", () => {
 imageWeightInput.addEventListener("input", updateWeightDisplay);
 
 saveBtn.addEventListener("click", async () => {
-  const config = getConfigFromForm();
+  await runWithButtonState(saveBtn, async () => {
+    try {
+      const config = getConfigFromForm();
+      const result = await sendRuntimeMessage<TransmissionResult>({
+        type: "SAVE_CONFIG",
+        config,
+      });
 
-  await chrome.runtime.sendMessage({
-    type: "SAVE_CONFIG",
-    config,
+      if (!result.ok) {
+        showStatus(result.error || "Could not save configuration.", true);
+        return;
+      }
+
+      showStatus("Settings saved. Reload Instagram if it is already open.");
+    } catch (error) {
+      showRuntimeError("Could not save configuration.", error);
+    }
   });
-
-  showStatus("Settings saved. Reload Instagram if it is already open.");
 });
 
 pingBtn.addEventListener("click", async () => {
   await runWithButtonState(pingBtn, async () => {
-    const result = (await chrome.runtime.sendMessage({
-      type: "PING_API",
-    })) as TransmissionResult;
+    try {
+      const result = await sendRuntimeMessage<TransmissionResult>({
+        type: "PING_API",
+      });
 
-    if (!result.ok) {
-      showStatus(result.error || "Unable to reach backend API.", true);
-      return;
+      if (!result.ok) {
+        showStatus(result.error || "Unable to reach backend API.", true);
+        return;
+      }
+
+      showStatus("Backend API is reachable.");
+    } catch (error) {
+      showRuntimeError("Could not contact the extension background worker.", error);
     }
-
-    showStatus("Backend API is reachable.");
   });
 });
 
@@ -93,9 +107,9 @@ analyseBtn.addEventListener("click", async () => {
 });
 
 async function loadConfig(): Promise<void> {
-  const stored = (await chrome.runtime.sendMessage({
+  const stored = await sendRuntimeMessage<Partial<StoredSentinelConfig>>({
     type: "GET_CONFIG",
-  })) as Partial<StoredSentinelConfig>;
+  });
 
   apiUrlInput.value =
     stored.sentinel_api_url || DEFAULT_CONFIG.sentinel_api_url;
@@ -109,6 +123,14 @@ async function loadConfig(): Promise<void> {
   const weights = stored.sentinel_weights || DEFAULT_CONFIG.sentinel_weights;
   imageWeightInput.value = String(Math.round(weights.image * 100));
   updateWeightDisplay();
+}
+
+async function initialisePopup(): Promise<void> {
+  try {
+    await loadConfig();
+  } catch (error) {
+    showRuntimeError("Could not load saved settings.", error);
+  }
 }
 
 function getConfigFromForm(): StoredSentinelConfig {
@@ -138,6 +160,16 @@ function showStatus(message: string, isError = false) {
   statusEl.textContent = message;
   statusEl.style.display = "block";
   statusEl.classList.toggle("error", isError);
+}
+
+function showRuntimeError(prefix: string, error: unknown) {
+  const details =
+    error instanceof Error && error.message ? ` ${error.message}` : "";
+  showStatus(`${prefix}${details}`, true);
+}
+
+async function sendRuntimeMessage<T>(message: unknown): Promise<T> {
+  return (await chrome.runtime.sendMessage(message)) as T;
 }
 
 async function runWithButtonState(
