@@ -1,16 +1,26 @@
+import type { AnalysisResult } from "../shared/types";
 import { AnalysisPipeline } from "./analysis-pipeline";
 
-/**
- * Detects when Instagram Stories are being viewed and triggers analysis.
- * Uses MutationObserver to watch for Story viewer DOM changes.
- * Only processes content the worker is actively viewing — no scraping.
- */
+const RESERVED_PATHS = new Set([
+  "accounts",
+  "direct",
+  "explore",
+  "p",
+  "reel",
+  "reels",
+  "stories",
+]);
+
 export class StoryDetector {
   private observer: MutationObserver;
+  private pollTimer: number | null = null;
   private isProcessing = false;
-  private lastProcessedTime = 0;
+  private lastProcessedAt = 0;
+  private lastProcessedSignature = "";
   private pipeline: AnalysisPipeline;
-  private readonly THROTTLE_MS = 2000;
+  private readonly THROTTLE_MS = 1500;
+  private readonly POLL_MS = 1500;
+  private readonly DUPLICATE_WINDOW_MS = 10000;
 
   constructor(pipeline: AnalysisPipeline) {
     this.pipeline = pipeline;
@@ -18,110 +28,279 @@ export class StoryDetector {
   }
 
   start(): void {
-    this.observer.observe(document.body, {
-      childList: true,
-      subtree: true,
-    });
+    if (document.body) {
+      this.observer.observe(document.body, {
+        childList: true,
+        subtree: true,
+      });
+    }
+
+    this.pollTimer = window.setInterval(() => {
+      void this.scanForStory("poll");
+    }, this.POLL_MS);
+
+    void this.scanForStory("startup");
     console.log("[Sentinel] Story detector started");
   }
 
   stop(): void {
     this.observer.disconnect();
-  }
-
-  private onMutation(_mutations: MutationRecord[]): void {
-    const storyViewer = this.findStoryViewer();
-    if (storyViewer && !this.isProcessing) {
-      this.processCurrentFrame(storyViewer);
+    if (this.pollTimer !== null) {
+      window.clearInterval(this.pollTimer);
+      this.pollTimer = null;
     }
   }
 
-  /**
-   * Finds the Instagram Story viewer element using structural heuristics.
-   * Avoids relying on specific class names (Instagram uses hashed CSS modules).
-   */
+  async analyseVisibleStory(): Promise<{
+    ok: boolean;
+    message: string;
+    result?: AnalysisResult;
+  }> {
+    const viewer = this.findStoryViewer();
+    if (!viewer) {
+      return {
+        ok: false,
+        message: "No Story viewer detected. Open an Instagram Story first.",
+      };
+    }
+
+    const result = await this.processCurrentFrame(viewer, "manual", true);
+    if (!result) {
+      return {
+        ok: false,
+        message: "Story analysis was skipped. Try changing stories and retrying.",
+      };
+    }
+
+    return {
+      ok: true,
+      message: `Analysed @${result.score.username} (${result.score.composite}/100)`,
+      result,
+    };
+  }
+
+  private onMutation(): void {
+    void this.scanForStory("mutation");
+  }
+
+  private async scanForStory(reason: string): Promise<void> {
+    if (this.isProcessing) {
+      return;
+    }
+
+    const viewer = this.findStoryViewer();
+    if (!viewer) {
+      return;
+    }
+
+    await this.processCurrentFrame(viewer, reason, false);
+  }
+
   private findStoryViewer(): HTMLElement | null {
-    // Strategy 1: Look for section with role="dialog" (Story modal)
-    const dialogs = document.querySelectorAll(
-      'div[role="dialog"], section[role="presentation"]'
-    );
-    for (const el of dialogs) {
-      if (this.isLikelyStoryViewer(el as HTMLElement)) {
-        return el as HTMLElement;
+    const candidates = new Set<HTMLElement>();
+    const selectors = ["div[role='dialog']", "section", "main", "article"];
+
+    for (const selector of selectors) {
+      document.querySelectorAll(selector).forEach((el) => {
+        if (el instanceof HTMLElement) {
+          candidates.add(el);
+        }
+      });
+    }
+
+    let bestCandidate: HTMLElement | null = null;
+    let bestScore = 0;
+
+    for (const candidate of candidates) {
+      const score = this.scoreCandidate(candidate);
+      if (score > bestScore) {
+        bestCandidate = candidate;
+        bestScore = score;
       }
     }
 
-    // Strategy 2: Look for full-viewport overlay with image/video
-    const fullScreenSections = document.querySelectorAll("section");
-    for (const section of fullScreenSections) {
-      const rect = section.getBoundingClientRect();
-      if (
-        rect.width > window.innerWidth * 0.5 &&
-        rect.height > window.innerHeight * 0.5
-      ) {
-        if (this.isLikelyStoryViewer(section as HTMLElement)) {
-          return section as HTMLElement;
-        }
+    return bestScore >= 5 ? bestCandidate : null;
+  }
+
+  private scoreCandidate(el: HTMLElement): number {
+    const rect = el.getBoundingClientRect();
+    if (rect.width < window.innerWidth * 0.35) {
+      return 0;
+    }
+    if (rect.height < window.innerHeight * 0.35) {
+      return 0;
+    }
+
+    const hasMedia =
+      el.querySelector('img[draggable="false"], img[src], video') !== null;
+    if (!hasMedia) {
+      return 0;
+    }
+
+    const hasProgressBar =
+      el.querySelectorAll('div[style*="scaleX"]').length > 0 ||
+      el.querySelectorAll('div[role="progressbar"]').length > 0;
+    const hasNavigationButtons =
+      el.querySelector(
+        'button[aria-label*="Next"], button[aria-label*="Previous"], button[aria-label*="Pause"]'
+      ) !== null;
+    const hasUserHeader = this.findUsernameLink(el) !== null;
+    const fillsViewport =
+      rect.width > window.innerWidth * 0.5 &&
+      rect.height > window.innerHeight * 0.5;
+
+    let score = 0;
+    score += 3; // has media
+    if (fillsViewport) {
+      score += 2;
+    }
+    if (hasProgressBar) {
+      score += 2;
+    }
+    if (hasUserHeader) {
+      score += 2;
+    }
+    if (hasNavigationButtons) {
+      score += 1;
+    }
+
+    return score;
+  }
+
+  private async processCurrentFrame(
+    viewer: HTMLElement,
+    reason: string,
+    force: boolean
+  ): Promise<AnalysisResult | null> {
+    const now = Date.now();
+    if (!force && now - this.lastProcessedAt < this.THROTTLE_MS) {
+      return null;
+    }
+
+    const username = this.extractUsername(viewer);
+    const signature = this.buildStorySignature(viewer, username);
+    if (
+      !force &&
+      signature === this.lastProcessedSignature &&
+      now - this.lastProcessedAt < this.DUPLICATE_WINDOW_MS
+    ) {
+      return null;
+    }
+
+    this.isProcessing = true;
+
+    try {
+      const result = await this.pipeline.analyse(viewer, username);
+      this.lastProcessedAt = now;
+      this.lastProcessedSignature = signature;
+
+      console.log("[Sentinel] Story analysed", {
+        reason,
+        username: result.score.username,
+        composite: result.score.composite,
+        text: result.score.textScore,
+        image: result.score.imageScore,
+        transmitted: result.transmitted,
+      });
+
+      return result;
+    } catch (error) {
+      console.warn("[Sentinel] Analysis error:", error);
+      return null;
+    } finally {
+      this.isProcessing = false;
+    }
+  }
+
+  private buildStorySignature(viewer: HTMLElement, username: string): string {
+    const mediaSource = this.getPrimaryMediaSource(viewer);
+    const textSignature = viewer.textContent
+      ?.replace(/\s+/g, " ")
+      .trim()
+      .slice(0, 120);
+
+    return `${username}|${mediaSource}|${textSignature || ""}`;
+  }
+
+  private getPrimaryMediaSource(viewer: HTMLElement): string {
+    const image = viewer.querySelector("img[src]") as HTMLImageElement | null;
+    if (image?.currentSrc || image?.src) {
+      return image.currentSrc || image.src;
+    }
+
+    const video = viewer.querySelector("video") as HTMLVideoElement | null;
+    if (video?.currentSrc || video?.src || video?.poster) {
+      return video.currentSrc || video.src || video.poster;
+    }
+
+    return "no-media";
+  }
+
+  private extractUsername(viewer: HTMLElement): string {
+    const link = this.findUsernameLink(viewer);
+    if (link) {
+      const username = this.parseUsernameFromHref(link.getAttribute("href"));
+      if (username) {
+        return username;
+      }
+    }
+
+    const textCandidates = viewer.querySelectorAll(
+      "header span, header a, span[dir='auto']"
+    );
+    for (const candidate of textCandidates) {
+      const text = candidate.textContent?.trim();
+      if (text && /^[A-Za-z0-9._]{1,30}$/.test(text)) {
+        return text;
+      }
+    }
+
+    return `unknown_${Date.now()}`;
+  }
+
+  private findUsernameLink(viewer: HTMLElement): HTMLAnchorElement | null {
+    const links = viewer.querySelectorAll("a[href]");
+    for (const link of links) {
+      if (!(link instanceof HTMLAnchorElement)) {
+        continue;
+      }
+
+      if (this.parseUsernameFromHref(link.getAttribute("href"))) {
+        return link;
       }
     }
 
     return null;
   }
 
-  private isLikelyStoryViewer(el: HTMLElement): boolean {
-    // Must contain an image or video
-    const hasMedia =
-      el.querySelector('img[draggable="false"]') !== null ||
-      el.querySelector("video") !== null;
-
-    // Check for progress bar pattern (thin elements at the top)
-    const hasProgressBar =
-      el.querySelectorAll('div[style*="scaleX"]').length > 0 ||
-      el.querySelectorAll('div[role="progressbar"]').length > 0;
-
-    // Must have a user header (link to profile)
-    const hasUserHeader = el.querySelector('a[href^="/"]') !== null;
-
-    return hasMedia && (hasProgressBar || hasUserHeader);
-  }
-
-  private async processCurrentFrame(viewer: HTMLElement): Promise<void> {
-    const now = Date.now();
-    if (now - this.lastProcessedTime < this.THROTTLE_MS) return;
-
-    this.isProcessing = true;
-    this.lastProcessedTime = now;
+  private parseUsernameFromHref(href: string | null): string | null {
+    if (!href) {
+      return null;
+    }
 
     try {
-      const username = this.extractUsername(viewer);
-      await this.pipeline.analyse(viewer, username);
-    } catch (err) {
-      console.warn("[Sentinel] Analysis error:", err);
-    } finally {
-      this.isProcessing = false;
-    }
-  }
-
-  /**
-   * Extracts Instagram username from the Story header.
-   * This is the visible username the worker is already seeing on screen.
-   */
-  private extractUsername(viewer: HTMLElement): string {
-    // Look for the profile link in the Story header
-    const links = viewer.querySelectorAll('a[href^="/"]');
-    for (const link of links) {
-      const href = link.getAttribute("href");
-      if (href && href !== "/" && !href.includes("/p/") && !href.includes("/explore/")) {
-        return href.replace(/^\//, "").replace(/\/$/, "");
+      const url = new URL(href, window.location.origin);
+      if (url.origin !== window.location.origin) {
+        return null;
       }
-    }
 
-    // Fallback: look for header text (username displayed at top of Story)
-    const headerSpan = viewer.querySelector("header span");
-    if (headerSpan?.textContent) {
-      return headerSpan.textContent.trim();
-    }
+      const segments = url.pathname.split("/").filter(Boolean);
+      if (segments.length !== 1) {
+        return null;
+      }
 
-    return "unknown_" + Date.now();
+      const candidate = segments[0];
+      if (RESERVED_PATHS.has(candidate.toLowerCase())) {
+        return null;
+      }
+
+      if (!/^[A-Za-z0-9._]{1,30}$/.test(candidate)) {
+        return null;
+      }
+
+      return candidate;
+    } catch {
+      return null;
+    }
   }
 }

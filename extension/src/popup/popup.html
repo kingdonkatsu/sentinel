@@ -88,12 +88,31 @@
       cursor: pointer;
     }
     button:hover { opacity: 0.9; }
+    .secondary-button {
+      margin-top: 10px;
+      background: #1e293b;
+      border: 1px solid #334155;
+    }
+    .actions {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 8px;
+      margin-top: 10px;
+    }
+    .actions button {
+      margin-top: 0;
+      font-size: 12px;
+      padding: 9px 8px;
+    }
     .status {
       text-align: center;
       font-size: 12px;
       margin-top: 8px;
       color: #22c55e;
       display: none;
+    }
+    .status.error {
+      color: #f87171;
     }
     .privacy-note {
       margin-top: 16px;
@@ -140,12 +159,16 @@
   </div>
 
   <button id="saveBtn">Save Configuration</button>
+  <div class="actions">
+    <button id="pingBtn" class="secondary-button" type="button">Test API</button>
+    <button id="analyseBtn" class="secondary-button" type="button">Analyse Story</button>
+  </div>
   <div class="status" id="status">Settings saved!</div>
 
   <div class="privacy-note">
     <strong>Privacy:</strong> Sentinel analyses content in your browser only.
-    No images, text, or personal data ever leave your device.
-    Only anonymised risk scores are transmitted.
+    Story images, videos, and text never leave your device.
+    Only usernames and numerical risk scores are transmitted.
   </div>
 
   <script type="module" src="popup.ts"></script>

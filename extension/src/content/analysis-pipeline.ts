@@ -1,4 +1,4 @@
-import type { RiskScore } from "../shared/types";
+import type { AnalysisResult, RiskScore } from "../shared/types";
 import { analyseImage, captureStoryImage } from "./image-analyser";
 import { analyseText, extractText } from "./text-analyser";
 import { OverlayRenderer } from "./overlay-renderer";
@@ -21,7 +21,10 @@ export class AnalysisPipeline {
     }
   }
 
-  async analyse(viewer: HTMLElement, username: string): Promise<void> {
+  async analyse(
+    viewer: HTMLElement,
+    username: string
+  ): Promise<AnalysisResult> {
     // Run image and text analysis in parallel — all in-browser
     const [imageData, text] = await Promise.all([
       captureStoryImage(viewer),
@@ -71,6 +74,14 @@ export class AnalysisPipeline {
     }
 
     // Transmit score to backend (only scores + username, zero story content)
-    await this.transmitter.send(score);
+    const transmission = await this.transmitter.send(score);
+
+    return {
+      score,
+      imageCaptured: imageData !== null,
+      textLength: text.length,
+      transmitted: transmission.ok,
+      transmissionError: transmission.error,
+    };
   }
 }

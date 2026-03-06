@@ -3,8 +3,12 @@
   "name": "Sentinel",
   "version": "0.1.0",
   "description": "Privacy-first mental health triage for youth workers",
-  "permissions": ["activeTab", "storage"],
-  "host_permissions": ["https://www.instagram.com/*"],
+  "permissions": ["activeTab", "storage", "tabs"],
+  "host_permissions": [
+    "https://www.instagram.com/*",
+    "http://localhost/*",
+    "http://127.0.0.1/*"
+  ],
   "background": {
     "service_worker": "src/background/service-worker.ts",
     "type": "module"
