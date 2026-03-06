@@ -1,7 +1,7 @@
 # Sentinel - Development Notes
 
 **Last Updated:** March 6, 2026
-**Status:** Live - Running with real extension data, no demo seeding
+**Status:** Demo - Backend auto-seeds 12 accounts on startup for presentations
 **Built By:** Claude (Opus 4.6) with Senior Software Engineer at Singapore Social Enterprise
 
 ---

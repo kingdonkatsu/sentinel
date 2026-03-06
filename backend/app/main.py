@@ -12,12 +12,14 @@ from app.models import OutreachRequest, OutreachResponse, ScorePayload
 from app.services.outreach_service import OutreachService
 from app.services.score_service import ScoreService
 from app.tasks.cleanup import cleanup_stale_accounts
+from scripts.seed_demo import seed as seed_demo_data
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     app.state.redis = redis.from_url(settings.REDIS_URL, decode_responses=False)
     cleanup_task = asyncio.create_task(cleanup_stale_accounts(app.state.redis))
+    await seed_demo_data()
     yield
     cleanup_task.cancel()
     await app.state.redis.close()
