@@ -1,4 +1,4 @@
-import type { RiskScore, TransmissionResult } from "../shared/types";
+import type { ModalityType, RiskScore, TransmissionResult } from "../shared/types";
 
 export class ScoreTransmitter {
   private initialized = false;
@@ -7,7 +7,10 @@ export class ScoreTransmitter {
     this.initialized = true;
   }
 
-  async send(score: RiskScore): Promise<TransmissionResult> {
+  async send(
+    score: RiskScore,
+    modalityScores?: Partial<Record<ModalityType, number>>
+  ): Promise<TransmissionResult> {
     if (!this.initialized) {
       await this.init();
     }
@@ -16,6 +19,7 @@ export class ScoreTransmitter {
       const result = (await chrome.runtime.sendMessage({
         type: "SUBMIT_SCORE",
         score,
+        modalityScores,
       })) as TransmissionResult;
 
       if (!result?.ok) {

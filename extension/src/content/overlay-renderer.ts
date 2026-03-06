@@ -1,10 +1,10 @@
-import type { RiskScore } from "../shared/types";
+import type { ModalityResult, RiskScore } from "../shared/types";
 
 export class OverlayRenderer {
   private shadowHost: HTMLElement | null = null;
   private dismissTimer: ReturnType<typeof setTimeout> | null = null;
 
-  show(score: RiskScore): void {
+  show(score: RiskScore, modalityResults?: ModalityResult[]): void {
     this.dismiss();
 
     this.shadowHost = document.createElement("div");
@@ -64,12 +64,35 @@ export class OverlayRenderer {
           opacity: 0.9;
           line-height: 1.5;
         }
-        .sentinel-label {
-          opacity: 0.7;
+        .sentinel-label { opacity: 0.7; }
+        .sentinel-modalities {
+          display: flex;
+          flex-wrap: wrap;
+          gap: 5px;
+          margin-top: 8px;
+          padding-top: 8px;
+          border-top: 1px solid rgba(255,255,255,0.2);
         }
+        .sentinel-chip {
+          display: flex;
+          align-items: center;
+          gap: 3px;
+          background: rgba(0,0,0,0.2);
+          border-radius: 5px;
+          padding: 2px 6px;
+          font-size: 10px;
+        }
+        .sentinel-dot {
+          width: 6px; height: 6px;
+          border-radius: 50%;
+        }
+        .dot-crit { background: #fca5a5; }
+        .dot-high { background: #fdba74; }
+        .dot-med  { background: #fde68a; }
+        .dot-low  { background: rgba(255,255,255,0.35); }
         @keyframes slideIn {
           from { transform: translateX(120%); opacity: 0; }
-          to { transform: translateX(0); opacity: 1; }
+          to   { transform: translateX(0);    opacity: 1; }
         }
       </style>
       <div class="sentinel-badge">
@@ -80,16 +103,41 @@ export class OverlayRenderer {
         <div class="sentinel-scores">
           <span class="sentinel-label">@${score.username}</span> &mdash;
           <span class="sentinel-label">Score:</span> ${score.composite}/100
-          (<span class="sentinel-label">Text:</span> ${score.textScore} |
-          <span class="sentinel-label">Image:</span> ${score.imageScore})
         </div>
+        ${this.renderModalityBreakdown(modalityResults)}
       </div>
     `;
 
     document.body.appendChild(this.shadowHost);
-
-    // Auto-dismiss after 8 seconds
     this.dismissTimer = setTimeout(() => this.dismiss(), 8000);
+  }
+
+  private renderModalityBreakdown(results?: ModalityResult[]): string {
+    if (!results || results.length === 0) return "";
+
+    const active = results
+      .filter((r) => r.available && r.score > 45)
+      .sort((a, b) => b.score - a.score);
+
+    if (active.length === 0) return "";
+
+    const LABELS: Record<string, string> = {
+      text: "Text", visual: "Visual", temporal: "Pattern",
+      video: "Video", metadata: "Context",
+    };
+
+    const chips = active.map((r) => {
+      const dot = r.score >= 85 ? "dot-crit"
+                : r.score >= 70 ? "dot-high"
+                : r.score >= 55 ? "dot-med"
+                : "dot-low";
+      return `<div class="sentinel-chip">
+        <div class="sentinel-dot ${dot}"></div>
+        <span>${LABELS[r.modality] ?? r.modality} ${r.score}</span>
+      </div>`;
+    }).join("");
+
+    return `<div class="sentinel-modalities">${chips}</div>`;
   }
 
   dismiss(): void {

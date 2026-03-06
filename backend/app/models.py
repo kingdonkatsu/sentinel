@@ -10,6 +10,15 @@ class ScorePayload(BaseModel):
     text_score: int = Field(..., ge=0, le=100)
     image_score: int = Field(..., ge=0, le=100)
     timestamp: int
+    # Optional per-modality scores from the multi-modal pipeline
+    modality_scores: Optional[dict[str, int]] = None
+
+
+class ConfirmationEntry(BaseModel):
+    """A confirmed case — recorded when a social worker acts on a flagged account."""
+    username: str
+    modality_scores: dict[str, int]
+    timestamp: int
 
 
 class AccountSummary(BaseModel):

@@ -1,6 +1,15 @@
+import json
+import time
+
 import redis.asyncio as redis
 
-from app.models import ScorePayload, AccountSummary, AccountDetail, ScoreDetail
+from app.models import (
+    AccountDetail,
+    AccountSummary,
+    ConfirmationEntry,
+    ScoreDetail,
+    ScorePayload,
+)
 
 TWENTY_FOUR_HOURS = 86400
 
@@ -14,39 +23,43 @@ class ScoreService:
         ts = payload.timestamp
 
         score_key = f"score:{username}:{ts}"
-        await self.redis.hset(score_key, mapping={
+        mapping: dict = {
             "composite": payload.composite_score,
             "text": payload.text_score,
             "image": payload.image_score,
             "timestamp": ts,
-        })
+        }
+        if payload.modality_scores:
+            mapping["modality_scores"] = json.dumps(payload.modality_scores)
+
+        await self.redis.hset(score_key, mapping=mapping)
         await self.redis.expire(score_key, TWENTY_FOUR_HOURS)
 
-        # Add score timestamp to account's score list (for history)
         scores_list_key = f"scores_list:{username}"
         await self.redis.zadd(scores_list_key, {str(ts): ts})
         await self.redis.expire(scores_list_key, TWENTY_FOUR_HOURS)
 
-        # Update priority index (only if new score is higher)
         await self.redis.zadd(
             "priority_index",
             {username: payload.composite_score},
             gt=True,
         )
 
-        # Update account summary for quick dashboard access
         account_key = f"account:{username}"
-        await self.redis.hset(account_key, mapping={
+        account_mapping: dict = {
             "username": username,
             "latest_composite": payload.composite_score,
             "latest_text": payload.text_score,
             "latest_image": payload.image_score,
             "last_seen": ts,
-        })
+        }
+        if payload.modality_scores:
+            account_mapping["latest_modality_scores"] = json.dumps(payload.modality_scores)
+
+        await self.redis.hset(account_key, mapping=account_mapping)
         await self.redis.hincrby(account_key, "score_count", 1)
         await self.redis.expire(account_key, TWENTY_FOUR_HOURS)
 
-        # Publish to Redis Stream for real-time SSE
         await self.redis.xadd("stream:scores", {
             "username": username,
             "composite": str(payload.composite_score),
@@ -54,6 +67,59 @@ class ScoreService:
             "image": str(payload.image_score),
             "timestamp": str(ts),
         }, maxlen=1000)
+
+    async def confirm_case(self, username: str) -> None:
+        """Record a social worker confirmation for calibration feedback."""
+        account_key = f"account:{username}"
+        data = await self.redis.hgetall(account_key)
+        if not data:
+            return
+
+        modality_raw = data.get(b"latest_modality_scores", data.get("latest_modality_scores", "{}"))
+        if isinstance(modality_raw, bytes):
+            modality_raw = modality_raw.decode()
+        modality_scores: dict[str, int] = json.loads(modality_raw or "{}")
+
+        ts = int(time.time() * 1000)
+        confirmation_key = f"confirmation:{username}:{ts}"
+        await self.redis.hset(confirmation_key, mapping={
+            "username": username,
+            "modality_scores": json.dumps(modality_scores),
+            "timestamp": ts,
+        })
+        await self.redis.expire(confirmation_key, TWENTY_FOUR_HOURS)
+
+        # Index confirmations by timestamp for efficient range queries
+        await self.redis.zadd("confirmations", {f"{username}:{ts}": ts})
+        await self.redis.expire("confirmations", TWENTY_FOUR_HOURS)
+
+    async def get_confirmations(self, since_ts: int) -> list[ConfirmationEntry]:
+        """Return all confirmations recorded after since_ts (ms epoch)."""
+        keys_raw = await self.redis.zrangebyscore("confirmations", since_ts + 1, "+inf")
+        results: list[ConfirmationEntry] = []
+
+        for key_raw in keys_raw:
+            key_str = key_raw.decode() if isinstance(key_raw, bytes) else key_raw
+            confirmation_key = f"confirmation:{key_str}"
+            data = await self.redis.hgetall(confirmation_key)
+            if not data:
+                continue
+
+            username_raw = data.get(b"username", data.get("username", b""))
+            modality_raw = data.get(b"modality_scores", data.get("modality_scores", b"{}"))
+            ts_raw = data.get(b"timestamp", data.get("timestamp", b"0"))
+
+            uname = username_raw.decode() if isinstance(username_raw, bytes) else username_raw
+            modality_str = modality_raw.decode() if isinstance(modality_raw, bytes) else modality_raw
+            ts = int(ts_raw.decode() if isinstance(ts_raw, bytes) else ts_raw)
+
+            results.append(ConfirmationEntry(
+                username=uname,
+                modality_scores=json.loads(modality_str or "{}"),
+                timestamp=ts,
+            ))
+
+        return results
 
     async def get_priority_dashboard(self, limit: int = 50) -> list[AccountSummary]:
         members_with_scores = await self.redis.zrevrange(
@@ -97,7 +163,6 @@ class ScoreService:
             val = data.get(key.encode(), data.get(key, 0))
             return int(val)
 
-        # Get all score timestamps for this account
         scores_list_key = f"scores_list:{username}"
         timestamps = await self.redis.zrange(scores_list_key, 0, -1)
 

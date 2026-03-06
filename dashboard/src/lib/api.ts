@@ -60,6 +60,15 @@ export async function fetchOutreachSuggestion(
   return res.json();
 }
 
+export async function confirmCase(username: string): Promise<void> {
+  const apiKey = process.env.NEXT_PUBLIC_API_KEY || "sentinel-hackathon-key";
+  const res = await fetch(`${API_URL}/api/v1/accounts/${username}/confirm`, {
+    method: "POST",
+    headers: { "X-Sentinel-Key": apiKey },
+  });
+  if (!res.ok) throw new Error("Failed to confirm case");
+}
+
 export function getScoreFeedUrl(): string {
   return `${API_URL}/api/v1/scores/feed`;
 }

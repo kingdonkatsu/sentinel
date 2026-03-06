@@ -1,9 +1,10 @@
 "use client";
 
+import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { useParams } from "next/navigation";
 import Link from "next/link";
-import { fetchAccountDetail, type AccountDetail } from "@/lib/api";
+import { fetchAccountDetail, confirmCase, type AccountDetail } from "@/lib/api";
 import { RiskBadge } from "@/components/risk-badge";
 import { ScoreChart } from "@/components/score-chart";
 import { OutreachCard } from "@/components/outreach-card";
@@ -14,6 +15,8 @@ export default function AccountDetailPage() {
   const params = useParams();
   const username = params.username as string;
 
+  const [confirmState, setConfirmState] = useState<"idle" | "loading" | "done">("idle");
+
   const {
     data: account,
     isLoading,
@@ -23,6 +26,16 @@ export default function AccountDetailPage() {
     queryFn: () => fetchAccountDetail(username),
     refetchInterval: 10000,
   });
+
+  async function handleConfirm() {
+    setConfirmState("loading");
+    try {
+      await confirmCase(username);
+      setConfirmState("done");
+    } catch {
+      setConfirmState("idle");
+    }
+  }
 
   if (isLoading) {
     return (
@@ -78,11 +91,30 @@ export default function AccountDetailPage() {
               {timeAgo(account.last_seen)}
             </p>
           </div>
-          <div className="text-right">
-            <div className="text-3xl font-bold text-white">
-              {account.max_composite}
+          <div className="flex flex-col items-end gap-3">
+            <div className="text-right">
+              <div className="text-3xl font-bold text-white">
+                {account.max_composite}
+              </div>
+              <div className="text-xs text-slate-500">Max Risk Score</div>
             </div>
-            <div className="text-xs text-slate-500">Max Risk Score</div>
+            <button
+              onClick={handleConfirm}
+              disabled={confirmState !== "idle"}
+              className={`text-xs px-3 py-1.5 rounded-lg font-medium transition-colors ${
+                confirmState === "done"
+                  ? "bg-green-700/40 text-green-300 cursor-default"
+                  : confirmState === "loading"
+                  ? "bg-slate-700 text-slate-400 cursor-wait"
+                  : "bg-slate-700 hover:bg-slate-600 text-slate-200 cursor-pointer"
+              }`}
+            >
+              {confirmState === "done"
+                ? "Confirmed ✓"
+                : confirmState === "loading"
+                ? "Confirming…"
+                : "Confirm Case"}
+            </button>
           </div>
         </div>
 
