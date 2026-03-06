@@ -1,7 +1,7 @@
 # Sentinel - Development Notes
 
-**Last Updated:** February 25, 2026
-**Status:** MVP Complete - Backend & Dashboard Working, Extension Needs Instagram Testing
+**Last Updated:** March 6, 2026
+**Status:** Live - Running with real extension data, no demo seeding
 **Built By:** Claude (Opus 4.6) with Senior Software Engineer at Singapore Social Enterprise
 
 ---
@@ -45,9 +45,8 @@ A privacy-first mental health detection tool for youth social workers. Monitors 
 ### ✅ Fully Working
 - Backend API (all 6 endpoints tested and working)
 - Redis data storage with 24h TTL
-- Worker dashboard with real-time updates
+- Worker dashboard with real-time updates (empty state shown when no data)
 - AI outreach generation (OpenAI + offline fallback)
-- Demo seed script with 12 realistic accounts
 
 ### ⚠️ Built But Untested
 - Chrome extension (compiles cleanly, not tested on Instagram)
@@ -96,21 +95,19 @@ cd backend
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
-REDIS_URL=redis://localhost:6379/0 uvicorn app.main:app --reload
+uvicorn app.main:app --reload
 
-# 3. Seed demo data
-REDIS_URL=redis://localhost:6379/0 python scripts/seed_demo.py
-
-# 4. Start Dashboard
+# 3. Start Dashboard
 cd ../dashboard
 npm install
 npm run dev
 
-# 5. Load Extension (optional - for Instagram testing)
+# 4. Load Extension in Chrome
 cd ../extension
 npm install
 npm run build
 # Load dist/ folder in chrome://extensions (Developer Mode)
+# Set API URL to http://localhost:8000 and API Key to value in backend/.env
 ```
 
 **Access:**
@@ -212,37 +209,30 @@ All keys have 24-hour TTL except `priority_index` (cleaned by background task).
 
 ---
 
-## What's Left for Hackathon Finals
+## What's Next (Live Mode)
 
 ### Critical (Must-Have)
 
-1. **Test Extension on Instagram** (1-2 hours)
+1. **Test Extension on Instagram**
    - Load extension in Chrome
    - Open Instagram Stories
-   - Debug Story detection (likely needs selector updates)
+   - Debug Story detection (likely needs selector updates in `story-detector.ts`)
    - Verify scores appear in dashboard
 
-2. **Fallback Demo Mode** (1 hour)
-   - Add toggle in extension popup
-   - Simulate scores every 10s when enabled
-   - Guarantees working demo even if Instagram detection fails
-
-3. **Prepare Demo Script** (30 min)
-   - Screenshots of dashboard
-   - Video walkthrough
-   - Backup slides
+2. **Add OpenAI API Key**
+   - Edit `backend/.env` and set `OPENAI_API_KEY=sk-...`
+   - Required for AI outreach suggestions (offline fallback works without it)
 
 ### Nice-to-Have
 
-4. **Better Story Detection** (2-3 hours if needed)
+3. **Better Story Detection**
    - Inspect Instagram's current DOM structure
    - Update selectors in `story-detector.ts`
    - Add retry logic
 
-5. **Visual Polish** (1 hour)
-   - Add loading states
-   - Error handling improvements
-   - Better empty states
+4. **Production Hardening**
+   - Change `API_KEY` in `backend/.env` to a strong secret
+   - See Deployment Notes section for full production checklist
 
 ---
 
@@ -262,20 +252,6 @@ All keys have 24-hour TTL except `priority_index` (cleaned by background task).
 
 ---
 
-## Demo Accounts (Seeded Data)
-
-When you run `seed_demo.py`, you get 12 accounts:
-
-| Username | Risk Profile | Max Score |
-|----------|-------------|-----------|
-| `zhi_xuan.c` | Critical, rising trend | 91 |
-| `aisyah.r_03` | High, declining | 92 |
-| `wei_jie_2010` | High | 87 |
-| `priya.k.sg` | Moderate, rising | 80 |
-| `haziq_m14` | Moderate | 68 |
-| ... and 7 more | Various | 22-62 |
-
----
 
 ## Testing Checklist
 
