@@ -10,7 +10,9 @@
  *   - Music/sticker overlays (mood correlates)
  *   - Story filter/effect presence (aesthetic mood signal)
  *   - Mention count (social isolation if zero in context)
- *   - Posting time (late-night 00:00–05:00 = elevated risk multiplier)
+ *
+ * Late-night posting is intentionally disabled until a reliable story-post
+ * timestamp is available from Instagram's DOM.
  *
  * Confidence is always 0.5 — this modality provides supplementary context
  * only and should never dominate the composite score.
@@ -24,7 +26,6 @@ interface MetadataSignals {
   hasMusicOverlay: boolean;
   hasFilterEffect: boolean;
   mentionCount: number;
-  isLateNightPost: boolean;
   emojiOnlyText: boolean;
 }
 
@@ -56,7 +57,6 @@ export class MetadataAnalyser implements Analyser {
       hasMusicOverlay: this.detectMusicOverlay(viewer),
       hasFilterEffect: this.detectFilterEffect(viewer),
       mentionCount: this.countMentions(viewer),
-      isLateNightPost: this.isLateNight(),
       emojiOnlyText: this.isEmojiOnly(viewer),
     };
   }
@@ -69,9 +69,6 @@ export class MetadataAnalyser implements Analyser {
 
     // Disabling replies is a social withdrawal signal
     if (s.isReplyDisabled) score += 8;
-
-    // Late-night posting correlates with insomnia and acute distress
-    if (s.isLateNightPost) score += 12;
 
     // Music overlays often signal emotional processing (positive or negative)
     // Slight positive nudge toward risk as it indicates emotional content
@@ -152,11 +149,6 @@ export class MetadataAnalyser implements Analyser {
     const textContent = viewer.textContent ?? "";
     const matches = textContent.match(/@[\w.]+/g);
     return matches ? matches.length : 0;
-  }
-
-  private isLateNight(): boolean {
-    const hour = new Date().getHours();
-    return hour >= 0 && hour < 5;
   }
 
   private isEmojiOnly(viewer: HTMLElement): boolean {

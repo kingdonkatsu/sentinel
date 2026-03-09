@@ -6,9 +6,11 @@
  *
  * Signals detected:
  *   - Rising score trend across recent stories
- *   - Late-night posting window (00:00–05:00 local time)
  *   - Rapid burst posting (>3 stories within 15 minutes)
  *   - Sustained high scores (≥70) across multiple consecutive stories
+ *
+ * Late-night posting is intentionally disabled until the pipeline has access
+ * to an actual story-post timestamp rather than viewer-time metadata.
  *
  * Confidence scales with buffer depth:
  *   0 pts → 0.0 (no data)
@@ -23,8 +25,6 @@ import type { Analyser, ModalityResult } from "../../shared/types";
 const RING_BUFFER_SIZE = 20;
 const BURST_WINDOW_MS = 15 * 60 * 1000;  // 15 minutes
 const BURST_THRESHOLD = 3;               // >3 stories in the window
-const LATE_NIGHT_START = 0;             // 00:00
-const LATE_NIGHT_END = 5;              // 05:00
 
 interface TemporalEntry {
   score: number;
@@ -97,12 +97,6 @@ export class TemporalAnalyser implements Analyser {
       if (recentAvg > priorAvg + 10) score += 15;
     }
 
-    // Late-night posting
-    const latestEntry = entries[entries.length - 1];
-    if (latestEntry && this.isLateNight(latestEntry.timestamp)) {
-      score += 12;
-    }
-
     // Burst detection: >BURST_THRESHOLD stories in BURST_WINDOW_MS
     const now = Date.now();
     const recentBurst = entries.filter(
@@ -126,11 +120,6 @@ export class TemporalAnalyser implements Analyser {
     if (bufferLength <= 4) return 0.3;
     if (bufferLength <= 9) return 0.5;
     return 0.8;
-  }
-
-  private isLateNight(timestamp: number): boolean {
-    const hour = new Date(timestamp).getHours();
-    return hour >= LATE_NIGHT_START && hour < LATE_NIGHT_END;
   }
 
   // ─── Storage ─────────────────────────────────────────────────────────────

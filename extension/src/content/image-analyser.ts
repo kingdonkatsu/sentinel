@@ -88,7 +88,35 @@ export async function captureStoryImage(
   viewer: HTMLElement
 ): Promise<ImageData | null> {
   const media = findPrimaryStoryMedia(viewer);
+  if (!media) {
+    return null;
+  }
 
+  return captureMediaImage(media);
+}
+
+export function captureVideoFrame(video: HTMLVideoElement): ImageData | null {
+  return captureMediaImageSync(video);
+}
+
+async function captureMediaImage(
+  media: HTMLImageElement | HTMLVideoElement
+): Promise<ImageData | null> {
+  if (media instanceof HTMLImageElement) {
+    const localImageData = captureMediaImageSync(media);
+    if (localImageData) {
+      return localImageData;
+    }
+
+    return captureRemoteImage(media);
+  }
+
+  return captureMediaImageSync(media);
+}
+
+function captureMediaImageSync(
+  media: HTMLImageElement | HTMLVideoElement
+): ImageData | null {
   const canvas = document.createElement("canvas");
   canvas.width = 224;
   canvas.height = 224;
@@ -96,22 +124,9 @@ export async function captureStoryImage(
   if (!ctx) return null;
 
   try {
-    if (media instanceof HTMLImageElement) {
-      ctx.drawImage(media, 0, 0, 224, 224);
-    } else if (media instanceof HTMLVideoElement) {
-      ctx.drawImage(media, 0, 0, 224, 224);
-    } else {
-      return null;
-    }
+    ctx.drawImage(media, 0, 0, 224, 224);
     return ctx.getImageData(0, 0, 224, 224);
   } catch {
-    if (media instanceof HTMLImageElement) {
-      const remoteImageData = await captureRemoteImage(media);
-      if (remoteImageData) {
-        return remoteImageData;
-      }
-    }
-
     return null;
   } finally {
     canvas.remove();

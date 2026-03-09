@@ -6,7 +6,8 @@
   "scripts": {
     "dev": "vite",
     "build:raw": "tsc && vite build",
-    "build": "npm run build:raw && node ./scripts/flush-redis.mjs"
+    "build": "npm run build:raw && node ./scripts/flush-redis.mjs",
+    "test:unit": "tsc -p tsconfig.test.json && node --test tests/*.test.cjs"
   },
   "dependencies": {
     "@tensorflow/tfjs": "^4.22.0",

@@ -26,8 +26,6 @@ import {
 import { zeroImageData, destroyCanvas } from "../privacy/secure-cleanup";
 import type * as FaceApiType from "@vladmandic/face-api";
 
-const MODELS_URL = chrome.runtime.getURL("models/faceapi");
-
 /**
  * Risk weights for each FER expression class.
  * face-api.js returns: angry, disgusted, fearful, happy, neutral, sad, surprised
@@ -51,9 +49,10 @@ async function loadFaceApi(): Promise<typeof FaceApiType | null> {
     const faceapi = await import("@vladmandic/face-api");
 
     if (!modelsLoaded) {
+      const modelsUrl = getModelsUrl();
       await Promise.all([
-        faceapi.nets.tinyFaceDetector.loadFromUri(MODELS_URL),
-        faceapi.nets.faceExpressionNet.loadFromUri(MODELS_URL),
+        faceapi.nets.tinyFaceDetector.loadFromUri(modelsUrl),
+        faceapi.nets.faceExpressionNet.loadFromUri(modelsUrl),
       ]);
       modelsLoaded = true;
       console.log("[Sentinel] face-api.js models loaded");
@@ -67,6 +66,15 @@ async function loadFaceApi(): Promise<typeof FaceApiType | null> {
   }
 }
 
+function getModelsUrl(): string {
+  return chrome.runtime.getURL("models/faceapi");
+}
+
+export interface CapturedFrameScore {
+  score: number;
+  confidence: number;
+}
+
 export class VisualEmotionAnalyser implements Analyser {
   readonly modality = "visual" as const;
 
@@ -76,17 +84,28 @@ export class VisualEmotionAnalyser implements Analyser {
 
   async analyse(viewer: HTMLElement): Promise<ModalityResult> {
     const t0 = performance.now();
+    const imageData = await captureStoryImage(viewer);
+
+    if (!imageData) {
+      return this.unavailableResult(performance.now() - t0);
+    }
+
+    const frameScore = await this.scoreCapturedFrame(imageData);
+    return {
+      modality: "visual",
+      score: frameScore.score,
+      confidence: frameScore.confidence,
+      available: true,
+      inferenceTimeMs: performance.now() - t0,
+    };
+  }
+
+  async scoreCapturedFrame(imageData: ImageData): Promise<CapturedFrameScore> {
     const canvas = document.createElement("canvas");
     canvas.width = 224;
     canvas.height = 224;
 
     try {
-      const imageData = await captureStoryImage(viewer);
-
-      if (!imageData) {
-        return this.unavailableResult(performance.now() - t0);
-      }
-
       const heuristicScore = analyseImage(imageData);
 
       // Attempt ML-based scoring
@@ -101,26 +120,19 @@ export class VisualEmotionAnalyser implements Analyser {
             ? Math.max(0.55, mlResult.confidence - 0.1)
             : mlResult.confidence;
 
-        zeroImageData(imageData);
         return {
-          modality: "visual",
           score: blendedScore,
           confidence: blendedConfidence,
-          available: true,
-          inferenceTimeMs: performance.now() - t0,
         };
       }
 
       // Fallback: colour histogram heuristic
-      zeroImageData(imageData);
       return {
-        modality: "visual",
         score: heuristicScore,
         confidence: 0.3,
-        available: true,
-        inferenceTimeMs: performance.now() - t0,
       };
     } finally {
+      zeroImageData(imageData);
       destroyCanvas(canvas);
     }
   }

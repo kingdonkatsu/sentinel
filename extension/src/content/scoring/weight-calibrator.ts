@@ -2,8 +2,8 @@
  * Manages the calibration feedback loop that gently nudges base weights
  * toward modalities that historically correlated with confirmed cases.
  *
- * State lives in chrome.storage.session (cleared on browser restart).
- * Calibration resets every 7 days to prevent runaway drift.
+ * State lives in chrome.storage.local so calibration survives browser restart.
+ * Calibration still resets every 7 days to prevent runaway drift.
  *
  * When a social worker marks a case as actionable on the dashboard,
  * the dashboard can send a message to the extension:
@@ -16,19 +16,34 @@
 import type { CalibrationState, ModalityType } from "../../shared/types";
 import { BASE_WEIGHTS } from "./composite-scorer";
 
-const STORAGE_KEY = "sentinel_calibration";
-const RESET_INTERVAL_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
+export const CALIBRATION_STORAGE_KEY = "sentinel_calibration";
+export const CALIBRATION_RESET_INTERVAL_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
 const MAX_ADJUSTMENT = 0.05; // ±5% from base weight
+
+export interface StorageAreaLike {
+  get(keys?: string | string[] | Record<string, unknown> | null): Promise<Record<string, unknown>>;
+  set(items: Record<string, unknown>): Promise<void>;
+}
 
 export class WeightCalibrator {
   private state: CalibrationState | null = null;
+  private storageArea: StorageAreaLike;
+  private now: () => number;
+
+  constructor(
+    storageArea?: StorageAreaLike,
+    now: () => number = () => Date.now()
+  ) {
+    this.storageArea = storageArea ?? getDefaultStorageArea();
+    this.now = now;
+  }
 
   async load(): Promise<void> {
     try {
-      const result = await chrome.storage.session.get(STORAGE_KEY);
-      const stored = result[STORAGE_KEY] as CalibrationState | undefined;
+      const result = await this.storageArea.get(CALIBRATION_STORAGE_KEY);
+      const stored = result[CALIBRATION_STORAGE_KEY] as CalibrationState | undefined;
 
-      if (stored && Date.now() - stored.lastCalibrated < RESET_INTERVAL_MS) {
+      if (stored && this.now() - stored.lastCalibrated < CALIBRATION_RESET_INTERVAL_MS) {
         this.state = stored;
       } else {
         this.state = this.defaultState();
@@ -104,18 +119,33 @@ export class WeightCalibrator {
   private defaultState(): CalibrationState {
     return {
       modalityAccuracy: {},
-      lastCalibrated: Date.now(),
+      lastCalibrated: this.now(),
       adjustedWeights: undefined,
     };
   }
 
   private async persist(): Promise<void> {
     try {
-      await chrome.storage.session.set({ [STORAGE_KEY]: this.state });
+      await this.storageArea.set({ [CALIBRATION_STORAGE_KEY]: this.state });
     } catch {
-      // session storage unavailable — degrade gracefully
+      // storage unavailable — degrade gracefully
     }
   }
 }
 
 export const weightCalibrator = new WeightCalibrator();
+
+function getDefaultStorageArea(): StorageAreaLike {
+  if (typeof chrome !== "undefined" && chrome.storage?.local) {
+    return chrome.storage.local;
+  }
+
+  return {
+    async get() {
+      return {};
+    },
+    async set() {
+      // no-op in non-extension environments
+    },
+  };
+}

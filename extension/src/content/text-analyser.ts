@@ -52,6 +52,14 @@ const UI_TEXT_PATTERNS = [
   /^send message$/i,
 ];
 
+interface KeywordPattern {
+  weight: number;
+  pattern: RegExp;
+}
+
+const DISTRESS_PATTERNS = compileKeywordPatterns(DISTRESS_KEYWORDS);
+const POSITIVE_PATTERNS = compileKeywordPatterns(POSITIVE_KEYWORDS);
+
 export function analyseText(text: string): number {
   if (!text || text.trim().length === 0) {
     return 50; // Neutral when no text present
@@ -62,18 +70,18 @@ export function analyseText(text: string): number {
   let matchCount = 0;
 
   // Check distress keywords
-  for (const [keyword, weight] of Object.entries(DISTRESS_KEYWORDS)) {
-    if (lower.includes(keyword)) {
+  for (const { pattern, weight } of DISTRESS_PATTERNS) {
+    if (pattern.test(lower)) {
       totalScore += weight;
-      matchCount++;
+      matchCount += 1;
     }
   }
 
   // Check positive keywords
-  for (const [keyword, weight] of Object.entries(POSITIVE_KEYWORDS)) {
-    if (lower.includes(keyword)) {
+  for (const { pattern, weight } of POSITIVE_PATTERNS) {
+    if (pattern.test(lower)) {
       totalScore += weight;
-      matchCount++;
+      matchCount += 1;
     }
   }
 
@@ -124,4 +132,22 @@ function isVisibleTextElement(element: HTMLElement): boolean {
     Math.min(rect.bottom, window.innerHeight) - Math.max(rect.top, 0);
 
   return intersectionWidth > 8 && intersectionHeight > 8;
+}
+
+function compileKeywordPatterns(
+  keywords: Record<string, number>
+): KeywordPattern[] {
+  return Object.entries(keywords).map(([keyword, weight]) => ({
+    weight,
+    pattern: createKeywordPattern(keyword),
+  }));
+}
+
+function createKeywordPattern(keyword: string): RegExp {
+  const escaped = escapeRegex(keyword.toLowerCase());
+  return new RegExp(`(^|[^a-z])${escaped}($|[^a-z])`);
+}
+
+function escapeRegex(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }

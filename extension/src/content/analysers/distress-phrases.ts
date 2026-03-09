@@ -94,14 +94,18 @@ export const ALL_DISTRESS_PHRASES: readonly string[] = [
  * the confidence is bumped up and the score is floored.
  */
 export const URGENCY_PATTERNS = [
-  /tonight/i,
-  /right now/i,
-  /this moment/i,
+  /\btonight\b/i,
+  /\bright now\b/i,
+  /\bthis moment\b/i,
   /can'?t take it anymore/i,
-  /last time/i,
-  /never again/i,
+  /\blast time\b/i,
+  /\bnever again\b/i,
   /goodbye everyone/i,
-  /final post/i,
-  /last message/i,
-  /\btoday\b.*(?:end|stop|done)/i,
+  /\bfinal post\b/i,
+  /\blast message\b/i,
+  /\btoday\b.*(?:end it|end everything|stop the pain|done with (?:life|everything|this world))/i,
 ] as const;
+
+export function hasUrgencySignal(text: string): boolean {
+  return URGENCY_PATTERNS.some((pattern) => pattern.test(text));
+}

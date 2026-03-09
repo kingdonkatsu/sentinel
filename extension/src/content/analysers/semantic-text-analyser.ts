@@ -24,7 +24,11 @@
 import type { Analyser, ModalityResult } from "../../shared/types";
 import { analyseText, extractText } from "../text-analyser";
 import { releaseString } from "../privacy/secure-cleanup";
-import { ALL_DISTRESS_PHRASES, URGENCY_PATTERNS } from "./distress-phrases";
+import { ALL_DISTRESS_PHRASES, hasUrgencySignal } from "./distress-phrases";
+import {
+  mapSimilarityToRiskScore,
+  similarityToConfidence,
+} from "./semantic-text-scoring";
 
 // Bump this when the phrase list changes — forces cache invalidation
 const PHRASE_LIST_VERSION = 1;
@@ -76,7 +80,7 @@ export class SemanticTextAnalyser implements Analyser {
     }
 
     // ── Urgency detection ────────────────────────────────────────────────
-    const hasUrgency = URGENCY_PATTERNS.some((p) => p.test(rawText!));
+    const hasUrgency = hasUrgencySignal(rawText);
 
     // ── ML semantic scoring ──────────────────────────────────────────────
     const embedder = await this.loadEmbedder();
@@ -111,9 +115,7 @@ export class SemanticTextAnalyser implements Analyser {
 
       // Map similarity [0, 1] → risk score
       // similarity ≥ 0.85 → high risk (≥80), ≤ 0.3 → low risk (≤30)
-      const semanticScore = Math.round(
-        Math.max(0, Math.min(100, (maxSimilarity - 0.3) / 0.55 * 100))
-      );
+      const semanticScore = mapSimilarityToRiskScore(maxSimilarity);
 
       // Blend semantic and keyword scores — semantic is primary
       const blended = Math.round(semanticScore * 0.65 + keywordScore * 0.35);
@@ -122,11 +124,7 @@ export class SemanticTextAnalyser implements Analyser {
       const finalScore = hasUrgency ? Math.max(blended, 75) : blended;
 
       // Confidence: driven by similarity strength
-      const confidence = maxSimilarity >= 0.7
-        ? 0.9
-        : maxSimilarity >= 0.5
-        ? 0.7
-        : 0.5;
+      const confidence = similarityToConfidence(maxSimilarity);
 
       return this.result(finalScore, confidence, true, performance.now() - t0);
     } catch {

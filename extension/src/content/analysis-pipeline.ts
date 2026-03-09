@@ -1,12 +1,12 @@
 /**
  * Phase 2 analysis pipeline.
  *
- * Orchestrates 5 modality analysers in parallel, then fuses results using
+ * Orchestrates 5 modality analysers, then fuses results using
  * the Bayesian confidence-weighted compositor and calibrated base weights.
  *
  * Modalities:
  *   - text     SemanticTextAnalyser  (MiniLM-L6 embeddings + keyword fallback)
- *   - visual   VisualEmotionAnalyser (BlazeFace + MobileNetV2 + histogram fallback)
+ *   - visual   VisualEmotionAnalyser (TinyFaceDetector + FaceExpressionNet + histogram fallback)
  *   - temporal TemporalAnalyser      (ring buffer + posting pattern detection)
  *   - video    VideoAnalyser         (multi-frame sampling, video stories only)
  *   - metadata MetadataAnalyser      (DOM-based platform signals)
@@ -18,31 +18,78 @@
  */
 
 import type { AnalysisResult, ModalityResult, ModalityType, RiskScore } from "../shared/types";
+import { captureStoryImage } from "./image-analyser";
 import { OverlayRenderer } from "./overlay-renderer";
 import { ScoreTransmitter } from "./score-transmitter";
 import { VisualEmotionAnalyser } from "./analysers/visual-emotion-analyser";
 import { SemanticTextAnalyser } from "./analysers/semantic-text-analyser";
 import { TemporalAnalyser } from "./analysers/temporal-analyser";
-import { VideoAnalyser } from "./analysers/video-analyser";
+import { VideoAnalyser, type VideoAnalysisSeed } from "./analysers/video-analyser";
 import { MetadataAnalyser } from "./analysers/metadata-analyser";
 import { compositeScorer } from "./scoring/composite-scorer";
 import { weightCalibrator } from "./scoring/weight-calibrator";
 import { memoryMonitor } from "./privacy/memory-monitor";
+import { cloneImageData, zeroImageData } from "./privacy/secure-cleanup";
+
+type OverlayLike = Pick<OverlayRenderer, "show" | "dismiss">;
+type TransmitterLike = Pick<ScoreTransmitter, "init" | "send">;
+type VisualAnalyserLike = Pick<
+  VisualEmotionAnalyser,
+  "analyse" | "scoreCapturedFrame" | "dispose"
+>;
+type TextAnalyserLike = Pick<SemanticTextAnalyser, "analyse" | "dispose">;
+type TemporalAnalyserLike = Pick<
+  TemporalAnalyser,
+  "analyse" | "dispose" | "record" | "setUsername"
+>;
+type VideoAnalyserLike = Pick<VideoAnalyser, "isAvailable" | "analyse" | "dispose">;
+type MetadataAnalyserLike = Pick<MetadataAnalyser, "analyse" | "dispose">;
+type WeightCalibratorLike = Pick<typeof weightCalibrator, "load" | "getWeights">;
+type MemoryMonitorLike = Pick<typeof memoryMonitor, "startMonitoring" | "stopMonitoring">;
+
+interface AnalysisPipelineDeps {
+  overlay: OverlayLike;
+  transmitter: TransmitterLike;
+  visualAnalyser: VisualAnalyserLike;
+  textAnalyser: TextAnalyserLike;
+  temporalAnalyser: TemporalAnalyserLike;
+  videoAnalyser: VideoAnalyserLike;
+  metadataAnalyser: MetadataAnalyserLike;
+  weightCalibrator: WeightCalibratorLike;
+  memoryMonitor: MemoryMonitorLike;
+  captureStoryImage: typeof captureStoryImage;
+}
 
 export class AnalysisPipeline {
-  private overlay = new OverlayRenderer();
-  private transmitter = new ScoreTransmitter();
+  private overlay: OverlayLike;
+  private transmitter: TransmitterLike;
   private threshold = 70;
 
-  private visualAnalyser = new VisualEmotionAnalyser();
-  private textAnalyser = new SemanticTextAnalyser();
-  private temporalAnalyser = new TemporalAnalyser();
-  private videoAnalyser = new VideoAnalyser();
-  private metadataAnalyser = new MetadataAnalyser();
+  private visualAnalyser: VisualAnalyserLike;
+  private textAnalyser: TextAnalyserLike;
+  private temporalAnalyser: TemporalAnalyserLike;
+  private videoAnalyser: VideoAnalyserLike;
+  private metadataAnalyser: MetadataAnalyserLike;
+  private calibrator: WeightCalibratorLike;
+  private memoryMonitor: MemoryMonitorLike;
+  private captureStoryImage: typeof captureStoryImage;
+
+  constructor(deps: Partial<AnalysisPipelineDeps> = {}) {
+    this.overlay = deps.overlay ?? new OverlayRenderer();
+    this.transmitter = deps.transmitter ?? new ScoreTransmitter();
+    this.visualAnalyser = deps.visualAnalyser ?? new VisualEmotionAnalyser();
+    this.textAnalyser = deps.textAnalyser ?? new SemanticTextAnalyser();
+    this.temporalAnalyser = deps.temporalAnalyser ?? new TemporalAnalyser();
+    this.videoAnalyser = deps.videoAnalyser ?? new VideoAnalyser();
+    this.metadataAnalyser = deps.metadataAnalyser ?? new MetadataAnalyser();
+    this.calibrator = deps.weightCalibrator ?? weightCalibrator;
+    this.memoryMonitor = deps.memoryMonitor ?? memoryMonitor;
+    this.captureStoryImage = deps.captureStoryImage ?? captureStoryImage;
+  }
 
   async init(): Promise<void> {
     await this.transmitter.init();
-    await weightCalibrator.load();
+    await this.calibrator.load();
 
     const config = await chrome.storage.local.get([
       "sentinel_threshold",
@@ -51,7 +98,7 @@ export class AnalysisPipeline {
       this.threshold = config.sentinel_threshold;
     }
 
-    memoryMonitor.startMonitoring();
+    this.memoryMonitor.startMonitoring();
   }
 
   async analyse(
@@ -64,17 +111,18 @@ export class AnalysisPipeline {
     // ── Determine which modalities are applicable ────────────────────────
     const hasVideo = this.videoAnalyser.isAvailable(viewer);
 
-    // ── Run all modalities in parallel ───────────────────────────────────
-    const [textResult, visualResult, temporalResult, metadataResult, videoResult] =
-      await Promise.all([
-        this.textAnalyser.analyse(viewer),
-        this.visualAnalyser.analyse(viewer),
-        this.temporalAnalyser.analyse(viewer),
-        this.metadataAnalyser.analyse(viewer),
-        hasVideo
-          ? this.videoAnalyser.analyse(viewer)
-          : Promise.resolve(this.unavailableResult("video")),
-      ]);
+    const [textResult, temporalResult, metadataResult] = await Promise.all([
+      this.textAnalyser.analyse(viewer),
+      this.temporalAnalyser.analyse(viewer),
+      this.metadataAnalyser.analyse(viewer),
+    ]);
+
+    const { visualResult, videoResult } = hasVideo
+      ? await this.analyseVideoStory(viewer)
+      : {
+          visualResult: await this.visualAnalyser.analyse(viewer),
+          videoResult: this.unavailableResult("video"),
+        };
 
     const modalityResults: ModalityResult[] = [
       textResult,
@@ -85,7 +133,7 @@ export class AnalysisPipeline {
     ];
 
     // ── Fuse with calibrated weights ─────────────────────────────────────
-    const calibratedWeights = weightCalibrator.getWeights();
+    const calibratedWeights = this.calibrator.getWeights();
     const { composite, overallConfidence, effectiveWeights } =
       compositeScorer.fuse(modalityResults, calibratedWeights);
 
@@ -167,6 +215,46 @@ export class AnalysisPipeline {
     this.temporalAnalyser.dispose();
     this.videoAnalyser.dispose();
     this.metadataAnalyser.dispose();
-    memoryMonitor.stopMonitoring();
+    this.memoryMonitor.stopMonitoring();
+  }
+
+  private async analyseVideoStory(
+    viewer: HTMLElement
+  ): Promise<{ visualResult: ModalityResult; videoResult: ModalityResult }> {
+    const video = viewer.querySelector("video") as HTMLVideoElement | null;
+    const initialTime = video?.currentTime;
+    const initialFrame = await this.captureStoryImage(viewer);
+
+    try {
+      const visualResult = initialFrame
+        ? await this.visualResultFromCapturedFrame(cloneImageData(initialFrame))
+        : await this.visualAnalyser.analyse(viewer);
+
+      const seed: VideoAnalysisSeed = {
+        initialTime,
+        initialFrame: initialFrame ? cloneImageData(initialFrame) : null,
+      };
+      const videoResult = await this.videoAnalyser.analyse(viewer, seed);
+
+      return { visualResult, videoResult };
+    } finally {
+      if (initialFrame) {
+        zeroImageData(initialFrame);
+      }
+    }
+  }
+
+  private async visualResultFromCapturedFrame(
+    imageData: ImageData
+  ): Promise<ModalityResult> {
+    const t0 = performance.now();
+    const result = await this.visualAnalyser.scoreCapturedFrame(imageData);
+    return {
+      modality: "visual",
+      score: result.score,
+      confidence: result.confidence,
+      available: true,
+      inferenceTimeMs: performance.now() - t0,
+    };
   }
 }
