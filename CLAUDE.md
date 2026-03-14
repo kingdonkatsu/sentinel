@@ -231,7 +231,7 @@ sentinel/
 │   │   ├── services/     # Score + outreach services
 │   │   └── tasks/        # Background cleanup
 │   └── scripts/
-│       └── seed_demo.py  # Demo data generator
+│       └── # Removed demo seeding scripts
 │
 ├── dashboard/             # Next.js Dashboard
 │   ├── src/

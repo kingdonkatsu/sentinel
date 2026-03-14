@@ -80,14 +80,11 @@ python3 -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
 REDIS_URL=redis://localhost:6379/0 uvicorn app.main:app --reload
 
-# 3. Seed Demo Data
-REDIS_URL=redis://localhost:6379/0 python scripts/seed_demo.py
-
-# 4. Start Dashboard
+# 3. Start Dashboard
 cd ../dashboard
 npm install && npm run dev
 
-# 5. Load Extension (optional)
+# 4. Load Extension (optional)
 cd ../extension
 npm install && npm run build
 # Load dist/ in chrome://extensions
@@ -100,8 +97,7 @@ npm install && npm run build
 ## 📊 What You'll See
 
 ### Dashboard (http://localhost:3000/dashboard)
-- **12 demo accounts** with realistic Singapore youth Instagram usernames
-- **Risk scores** from 22 (low) to 92 (critical)
+- **Prioritized accounts** ranked by risk score
 - **Real-time updates** via Server-Sent Events
 - **Colour-coded badges**: Red ≥85, Orange ≥70, Yellow ≥50
 
@@ -162,7 +158,6 @@ npm install && npm run build
 ### ✅ Working
 - Backend API (13 integration tests passing; live OpenAI requires `OPENAI_API_KEY`)
 - Dashboard (full UI + real-time updates)
-- Demo mode (seeded data)
 
 ### ⚠️ Needs Testing
 - Chrome extension on real Instagram
