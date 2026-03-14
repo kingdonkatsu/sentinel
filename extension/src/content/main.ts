@@ -1,9 +1,11 @@
 import type { ModalityType } from "../shared/types";
 import { AnalysisPipeline } from "./analysis-pipeline";
+import { DevOcrSpike } from "./dev/ocr-spike";
 import { StoryDetector } from "./story-detector";
 import { weightCalibrator } from "./scoring/weight-calibrator";
 
 let detector: StoryDetector | null = null;
+let devOcrSpike: DevOcrSpike | null = null;
 
 async function init() {
   if (detector) {
@@ -17,6 +19,11 @@ async function init() {
 
   detector = new StoryDetector(pipeline);
   detector.start();
+
+  devOcrSpike = new DevOcrSpike({
+    getViewer: () => detector?.getVisibleStoryViewer() ?? null,
+  });
+  devOcrSpike.start();
 
   chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     if (!message || typeof message !== "object" || !("type" in message)) {

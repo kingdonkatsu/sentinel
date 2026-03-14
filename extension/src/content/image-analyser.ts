@@ -48,6 +48,11 @@ export function analyseImage(imageData: ImageData): number {
   return Math.max(0, Math.min(100, Math.round(score)));
 }
 
+export interface MediaCaptureOptions {
+  maxWidth: number;
+  maxHeight: number;
+}
+
 export function findPrimaryStoryMedia(
   viewer: HTMLElement
 ): HTMLImageElement | HTMLVideoElement | null {
@@ -99,6 +104,27 @@ export function captureVideoFrame(video: HTMLVideoElement): ImageData | null {
   return captureMediaImageSync(video);
 }
 
+export async function captureMediaCanvas(
+  media: HTMLImageElement | HTMLVideoElement,
+  options: MediaCaptureOptions
+): Promise<HTMLCanvasElement | null> {
+  const dimensions = getCaptureDimensions(media, options);
+  if (!dimensions) {
+    return null;
+  }
+
+  if (media instanceof HTMLImageElement) {
+    const localCanvas = drawMediaToCanvas(media, dimensions);
+    if (localCanvas) {
+      return localCanvas;
+    }
+
+    return captureRemoteImageCanvas(media, dimensions);
+  }
+
+  return drawMediaToCanvas(media, dimensions);
+}
+
 async function captureMediaImage(
   media: HTMLImageElement | HTMLVideoElement
 ): Promise<ImageData | null> {
@@ -117,17 +143,14 @@ async function captureMediaImage(
 function captureMediaImageSync(
   media: HTMLImageElement | HTMLVideoElement
 ): ImageData | null {
-  const canvas = document.createElement("canvas");
-  canvas.width = 224;
-  canvas.height = 224;
-  const ctx = canvas.getContext("2d");
-  if (!ctx) return null;
+  const canvas = drawMediaToCanvas(media, { width: 224, height: 224 });
+  if (!canvas) {
+    return null;
+  }
 
   try {
-    ctx.drawImage(media, 0, 0, 224, 224);
-    return ctx.getImageData(0, 0, 224, 224);
-  } catch {
-    return null;
+    const ctx = canvas.getContext("2d");
+    return ctx?.getImageData(0, 0, 224, 224) ?? null;
   } finally {
     canvas.remove();
   }
@@ -186,6 +209,73 @@ function renderPriority(element: HTMLElement): number {
 async function captureRemoteImage(
   image: HTMLImageElement
 ): Promise<ImageData | null> {
+  const canvas = await captureRemoteImageCanvas(image, { width: 224, height: 224 });
+  if (!canvas) {
+    return null;
+  }
+
+  try {
+    const ctx = canvas.getContext("2d");
+    return ctx?.getImageData(0, 0, 224, 224) ?? null;
+  } finally {
+    canvas.remove();
+  }
+}
+
+function getCaptureDimensions(
+  media: HTMLImageElement | HTMLVideoElement,
+  options: MediaCaptureOptions
+): { width: number; height: number } | null {
+  const sourceWidth =
+    media instanceof HTMLImageElement ? media.naturalWidth : media.videoWidth;
+  const sourceHeight =
+    media instanceof HTMLImageElement ? media.naturalHeight : media.videoHeight;
+
+  if (sourceWidth < 1 || sourceHeight < 1) {
+    return null;
+  }
+
+  const scale = Math.min(
+    options.maxWidth / sourceWidth,
+    options.maxHeight / sourceHeight,
+    1
+  );
+
+  return {
+    width: Math.max(1, Math.round(sourceWidth * scale)),
+    height: Math.max(1, Math.round(sourceHeight * scale)),
+  };
+}
+
+function drawMediaToCanvas(
+  media: HTMLImageElement | HTMLVideoElement,
+  dimensions: { width: number; height: number }
+): HTMLCanvasElement | null {
+  const canvas = document.createElement("canvas");
+  canvas.width = dimensions.width;
+  canvas.height = dimensions.height;
+  const ctx = canvas.getContext("2d");
+  if (!ctx) {
+    canvas.remove();
+    return null;
+  }
+
+  ctx.imageSmoothingEnabled = true;
+  ctx.imageSmoothingQuality = "high";
+
+  try {
+    ctx.drawImage(media, 0, 0, dimensions.width, dimensions.height);
+    return canvas;
+  } catch {
+    canvas.remove();
+    return null;
+  }
+}
+
+async function captureRemoteImageCanvas(
+  image: HTMLImageElement,
+  dimensions: { width: number; height: number }
+): Promise<HTMLCanvasElement | null> {
   const source = image.currentSrc || image.src;
   if (!source) {
     return null;
@@ -209,8 +299,8 @@ async function captureRemoteImage(
     const bitmap = await createImageBitmap(blob);
 
     const canvas = document.createElement("canvas");
-    canvas.width = 224;
-    canvas.height = 224;
+    canvas.width = dimensions.width;
+    canvas.height = dimensions.height;
     const ctx = canvas.getContext("2d");
     if (!ctx) {
       bitmap.close();
@@ -218,11 +308,11 @@ async function captureRemoteImage(
       return null;
     }
 
-    ctx.drawImage(bitmap, 0, 0, 224, 224);
-    const imageData = ctx.getImageData(0, 0, 224, 224);
+    ctx.imageSmoothingEnabled = true;
+    ctx.imageSmoothingQuality = "high";
+    ctx.drawImage(bitmap, 0, 0, dimensions.width, dimensions.height);
     bitmap.close();
-    canvas.remove();
-    return imageData;
+    return canvas;
   } catch {
     return null;
   }

@@ -8,6 +8,7 @@ export default defineConfig({
     outDir: "dist",
     rollupOptions: {
       input: {
+        ocrHost: "src/content/dev/ocr-host.html",
         popup: "src/popup/popup.html",
       },
     },

@@ -1,9 +1,11 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 const analysis_pipeline_1 = require("./analysis-pipeline");
+const ocr_spike_1 = require("./dev/ocr-spike");
 const story_detector_1 = require("./story-detector");
 const weight_calibrator_1 = require("./scoring/weight-calibrator");
 let detector = null;
+let devOcrSpike = null;
 async function init() {
     if (detector) {
         return;
@@ -13,6 +15,10 @@ async function init() {
     await pipeline.init();
     detector = new story_detector_1.StoryDetector(pipeline);
     detector.start();
+    devOcrSpike = new ocr_spike_1.DevOcrSpike({
+        getViewer: () => detector?.getVisibleStoryViewer() ?? null,
+    });
+    devOcrSpike.start();
     chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
         if (!message || typeof message !== "object" || !("type" in message)) {
             return false;

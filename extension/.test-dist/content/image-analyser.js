@@ -4,6 +4,7 @@ exports.analyseImage = analyseImage;
 exports.findPrimaryStoryMedia = findPrimaryStoryMedia;
 exports.captureStoryImage = captureStoryImage;
 exports.captureVideoFrame = captureVideoFrame;
+exports.captureMediaCanvas = captureMediaCanvas;
 /**
  * Analyses an image's visual tone using colour histogram heuristics.
  * Dark, desaturated images score higher risk.
@@ -81,6 +82,20 @@ async function captureStoryImage(viewer) {
 function captureVideoFrame(video) {
     return captureMediaImageSync(video);
 }
+async function captureMediaCanvas(media, options) {
+    const dimensions = getCaptureDimensions(media, options);
+    if (!dimensions) {
+        return null;
+    }
+    if (media instanceof HTMLImageElement) {
+        const localCanvas = drawMediaToCanvas(media, dimensions);
+        if (localCanvas) {
+            return localCanvas;
+        }
+        return captureRemoteImageCanvas(media, dimensions);
+    }
+    return drawMediaToCanvas(media, dimensions);
+}
 async function captureMediaImage(media) {
     if (media instanceof HTMLImageElement) {
         const localImageData = captureMediaImageSync(media);
@@ -92,18 +107,13 @@ async function captureMediaImage(media) {
     return captureMediaImageSync(media);
 }
 function captureMediaImageSync(media) {
-    const canvas = document.createElement("canvas");
-    canvas.width = 224;
-    canvas.height = 224;
-    const ctx = canvas.getContext("2d");
-    if (!ctx)
+    const canvas = drawMediaToCanvas(media, { width: 224, height: 224 });
+    if (!canvas) {
         return null;
-    try {
-        ctx.drawImage(media, 0, 0, 224, 224);
-        return ctx.getImageData(0, 0, 224, 224);
     }
-    catch {
-        return null;
+    try {
+        const ctx = canvas.getContext("2d");
+        return ctx?.getImageData(0, 0, 224, 224) ?? null;
     }
     finally {
         canvas.remove();
@@ -141,6 +151,51 @@ function renderPriority(element) {
     return visibleArea - distancePenalty;
 }
 async function captureRemoteImage(image) {
+    const canvas = await captureRemoteImageCanvas(image, { width: 224, height: 224 });
+    if (!canvas) {
+        return null;
+    }
+    try {
+        const ctx = canvas.getContext("2d");
+        return ctx?.getImageData(0, 0, 224, 224) ?? null;
+    }
+    finally {
+        canvas.remove();
+    }
+}
+function getCaptureDimensions(media, options) {
+    const sourceWidth = media instanceof HTMLImageElement ? media.naturalWidth : media.videoWidth;
+    const sourceHeight = media instanceof HTMLImageElement ? media.naturalHeight : media.videoHeight;
+    if (sourceWidth < 1 || sourceHeight < 1) {
+        return null;
+    }
+    const scale = Math.min(options.maxWidth / sourceWidth, options.maxHeight / sourceHeight, 1);
+    return {
+        width: Math.max(1, Math.round(sourceWidth * scale)),
+        height: Math.max(1, Math.round(sourceHeight * scale)),
+    };
+}
+function drawMediaToCanvas(media, dimensions) {
+    const canvas = document.createElement("canvas");
+    canvas.width = dimensions.width;
+    canvas.height = dimensions.height;
+    const ctx = canvas.getContext("2d");
+    if (!ctx) {
+        canvas.remove();
+        return null;
+    }
+    ctx.imageSmoothingEnabled = true;
+    ctx.imageSmoothingQuality = "high";
+    try {
+        ctx.drawImage(media, 0, 0, dimensions.width, dimensions.height);
+        return canvas;
+    }
+    catch {
+        canvas.remove();
+        return null;
+    }
+}
+async function captureRemoteImageCanvas(image, dimensions) {
     const source = image.currentSrc || image.src;
     if (!source) {
         return null;
@@ -158,19 +213,19 @@ async function captureRemoteImage(image) {
         });
         const bitmap = await createImageBitmap(blob);
         const canvas = document.createElement("canvas");
-        canvas.width = 224;
-        canvas.height = 224;
+        canvas.width = dimensions.width;
+        canvas.height = dimensions.height;
         const ctx = canvas.getContext("2d");
         if (!ctx) {
             bitmap.close();
             canvas.remove();
             return null;
         }
-        ctx.drawImage(bitmap, 0, 0, 224, 224);
-        const imageData = ctx.getImageData(0, 0, 224, 224);
+        ctx.imageSmoothingEnabled = true;
+        ctx.imageSmoothingQuality = "high";
+        ctx.drawImage(bitmap, 0, 0, dimensions.width, dimensions.height);
         bitmap.close();
-        canvas.remove();
-        return imageData;
+        return canvas;
     }
     catch {
         return null;

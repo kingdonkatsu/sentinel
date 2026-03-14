@@ -109,6 +109,9 @@ class StoryDetector {
             result,
         };
     }
+    getVisibleStoryViewer() {
+        return this.findStoryViewer();
+    }
     onMutation() {
         void this.scanForStory("mutation");
     }

@@ -127,6 +127,10 @@ export class StoryDetector {
     };
   }
 
+  getVisibleStoryViewer(): HTMLElement | null {
+    return this.findStoryViewer();
+  }
+
   private onMutation(): void {
     void this.scanForStory("mutation");
   }

@@ -33,7 +33,7 @@
   },
   "web_accessible_resources": [
     {
-      "resources": ["models/*"],
+      "resources": ["models/*", "src/content/dev/ocr-host.html"],
       "matches": ["https://www.instagram.com/*"]
     }
   ]
