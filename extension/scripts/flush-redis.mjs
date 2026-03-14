@@ -7,12 +7,25 @@ const backendEnvPath = path.resolve(process.cwd(), "../backend/.env");
 const redisUrl = process.env.REDIS_URL || readRedisUrlFromEnv(backendEnvPath);
 
 if (!redisUrl) {
-  console.error("[Sentinel] Unable to determine REDIS_URL for Redis flush");
-  process.exit(1);
+  console.warn("[Sentinel] REDIS_URL not found, skipping Redis flush");
+  process.exit(0);
 }
 
-await flushRedis(redisUrl);
-console.log(`[Sentinel] Redis cleared (${redisUrl})`);
+try {
+  await flushRedis(redisUrl);
+  console.log(`[Sentinel] Redis cleared (${redisUrl})`);
+} catch (error) {
+  if (isSkippableRedisError(error)) {
+    const message =
+      error instanceof Error && error.message ? error.message : String(error);
+    console.warn(
+      `[Sentinel] Redis flush skipped: ${message}. Extension build output is still valid.`
+    );
+    process.exit(0);
+  }
+
+  throw error;
+}
 
 function readRedisUrlFromEnv(envPath) {
   try {
@@ -121,4 +134,16 @@ function encodeCommand(parts) {
     segments.push(`$${Buffer.byteLength(part)}\r\n${part}\r\n`);
   }
   return segments.join("");
+}
+
+function isSkippableRedisError(error) {
+  const code =
+    error && typeof error === "object" && "code" in error ? error.code : null;
+
+  return (
+    code === "ENOTFOUND" ||
+    code === "ECONNREFUSED" ||
+    code === "ETIMEDOUT" ||
+    code === "EHOSTUNREACH"
+  );
 }
