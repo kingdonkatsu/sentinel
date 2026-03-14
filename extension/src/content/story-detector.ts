@@ -58,6 +58,7 @@ export class StoryDetector {
   private readonly POLL_MS = 1500;
   private readonly DUPLICATE_WINDOW_MS = 10000;
   private readonly SIGNATURE_TTL_MS = 120000;
+  private scanSequence = 0;
 
   constructor(pipeline: AnalysisPipeline) {
     this.pipeline = pipeline;
@@ -330,16 +331,22 @@ export class StoryDetector {
     }
 
     this.isProcessing = true;
+    const scanId = ++this.scanSequence;
+    const startedAt = performance.now();
 
     try {
       const result = await this.pipeline.analyse(viewer, username);
+      const elapsedMs = Math.round(performance.now() - startedAt);
       this.lastProcessedAt = now;
       this.lastProcessedSignature = signature;
       this.markSignatureProcessed(signature, now);
 
       console.log("[Sentinel] Story analysed", {
+        scanId,
         reason,
         username: result.score.username,
+        signature: signature.slice(0, 96),
+        elapsedMs,
         composite: result.score.composite,
         text: result.score.textScore,
         image: result.score.imageScore,

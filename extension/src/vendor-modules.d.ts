@@ -24,3 +24,16 @@ declare module "@tensorflow/tfjs" {
   export function ready(): Promise<void>;
   export function loadGraphModel(url: string): Promise<any>;
 }
+
+declare module "tesseract.js" {
+  export function createWorker(
+    lang?: string,
+    oem?: number,
+    options?: Record<string, unknown>
+  ): Promise<{
+    recognize: (image: ImageData) => Promise<any>;
+    terminate: () => Promise<void>;
+  }>;
+}
+
+declare const __SENTINEL_BUILD_STAMP__: string;

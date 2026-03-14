@@ -3,8 +3,9 @@
   "name": "Sentinel",
   "version": "0.1.0",
   "description": "Privacy-first mental health triage for youth workers",
-  "permissions": ["activeTab", "alarms", "storage", "tabs"],
+  "permissions": ["activeTab", "alarms", "offscreen", "storage", "tabs"],
   "host_permissions": [
+    "<all_urls>",
     "https://www.instagram.com/*",
     "https://*.cdninstagram.com/*",
     "https://*.fbcdn.net/*",
@@ -29,7 +30,7 @@
     }
   },
   "content_security_policy": {
-    "extension_pages": "script-src 'self' 'wasm-unsafe-eval'; object-src 'self'"
+    "extension_pages": "script-src 'self' 'wasm-unsafe-eval'; object-src 'self'; connect-src 'self' https://tessdata.projectnaptha.com https://cdn.jsdelivr.net https://unpkg.com"
   },
   "web_accessible_resources": [
     {

@@ -15,6 +15,11 @@ const CONFIG_KEYS = [
 
 const CONFIRMATION_POLL_ALARM = "sentinel_calibration_poll";
 const LAST_CHECK_KEY = "sentinel_last_confirmation_check";
+const OCR_SPIKE_TIMEOUT_MS = 3000;
+const OCR_SPIKE_PING_TIMEOUT_MS = 800;
+const OCR_SPIKE_OFFSCREEN_PATH = "src/offscreen/ocr-spike.html";
+
+console.log("[Sentinel] Background build stamp:", __SENTINEL_BUILD_STAMP__);
 
 // ── Lifecycle ──────────────────────────────────────────────────────────────
 
@@ -103,13 +108,23 @@ async function pollConfirmations(): Promise<void> {
 
 // ── Message handler ────────────────────────────────────────────────────────
 
-chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
-  void handleMessage(message, sendResponse);
+chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+  if (
+    message &&
+    typeof message === "object" &&
+    "type" in message &&
+    (message as { type: unknown }).type === "OCR_SPIKE_OFFSCREEN_RECOGNIZE"
+  ) {
+    // Let offscreen document handle this message.
+    return false;
+  }
+  void handleMessage(message, sender, sendResponse);
   return true;
 });
 
 async function handleMessage(
   message: unknown,
+  sender: chrome.runtime.MessageSender,
   sendResponse: (response?: unknown) => void
 ): Promise<void> {
   try {
@@ -156,6 +171,27 @@ async function handleMessage(
         }
         const result = await fetchMediaBytes(message.url);
         sendResponse(result);
+        return;
+      }
+
+      case "CAPTURE_VISIBLE_TAB": {
+        const result = await captureVisibleTab(sender);
+        sendResponse(result);
+        return;
+      }
+
+      case "OCR_SPIKE_RECOGNIZE": {
+        if (!isOcrSpikeRecognizeMessage(message)) {
+          sendResponse({ ok: false, error: "Invalid OCR spike payload" });
+          return;
+        }
+        const result = await runOcrSpike(message.imageData);
+        sendResponse(result);
+        return;
+      }
+
+      case "OCR_SPIKE_OFFSCREEN_RECOGNIZE": {
+        // Handled by offscreen document context.
         return;
       }
 
@@ -331,6 +367,203 @@ async function fetchMediaBytes(
   }
 }
 
+async function captureVisibleTab(
+  sender: chrome.runtime.MessageSender
+): Promise<
+  | { ok: true; dataUrl: string }
+  | { ok: false; error: string }
+> {
+  try {
+    const senderWindowId = sender.tab?.windowId;
+    const dataUrl: string =
+      typeof senderWindowId === "number"
+        ? await chrome.tabs.captureVisibleTab(senderWindowId, { format: "png" })
+        : await chrome.tabs.captureVisibleTab({ format: "png" });
+    if (!dataUrl) {
+      return { ok: false, error: "captureVisibleTab returned empty data" };
+    }
+    console.log("[Sentinel][OCR Spike] captureVisibleTab ok", {
+      windowId: senderWindowId ?? "current",
+      bytes: dataUrl.length,
+    });
+    return { ok: true, dataUrl };
+  } catch (error) {
+    const messageText =
+      error instanceof Error ? error.message : "Failed to capture visible tab";
+    console.warn("[Sentinel][OCR Spike] captureVisibleTab failed", {
+      tabId: sender.tab?.id,
+      windowId: sender.tab?.windowId,
+      error: messageText,
+    });
+    return { ok: false, error: messageText };
+  }
+}
+
+async function runOcrSpike(imageData: {
+  width: number;
+  height: number;
+  data: number[];
+}): Promise<
+  | { ok: true; text: string; confidence: number | null; wordCount: number; recognizeMs: number }
+  | { ok: false; error: string }
+> {
+  try {
+    const offscreenReady = await ensureOcrSpikeOffscreenDocument();
+    if (!offscreenReady) {
+      return { ok: false, error: "offscreen_init_failed: unable to initialise offscreen document" };
+    }
+
+    const ping = await pingOcrSpikeOffscreenDocument();
+    if (!ping.ok) {
+      return { ok: false, error: `offscreen_ping_failed: ${ping.error}` };
+    }
+
+    const response = await withTimeout(
+      chrome.runtime.sendMessage({
+        type: "OCR_SPIKE_OFFSCREEN_RECOGNIZE",
+        imageData,
+      }) as Promise<
+        | { ok: true; text: string; confidence: number | null; wordCount: number; recognizeMs: number }
+        | { ok: false; error?: string }
+      >,
+      OCR_SPIKE_TIMEOUT_MS + 1000
+    );
+
+    if (!response) {
+      return { ok: false, error: "offscreen_no_response: offscreen document did not answer recognize request" };
+    }
+
+    if (!response?.ok) {
+      const detailedError =
+        typeof response?.error === "string" && response.error.trim().length > 0
+          ? response.error
+          : safeSerializeForError(response);
+      return { ok: false, error: `offscreen_recognize_failed: ${detailedError}` };
+    }
+
+    return response;
+  } catch (error) {
+    const messageText =
+      error instanceof Error ? error.message : "ocr spike recognition failed";
+    return { ok: false, error: `offscreen_runtime_error: ${messageText}` };
+  }
+}
+
+function safeSerializeForError(value: unknown): string {
+  try {
+    const serialized = JSON.stringify(value);
+    if (serialized && serialized !== "{}") return serialized;
+  } catch {
+    // ignore
+  }
+  return "unknown recognize error";
+}
+
+async function pingOcrSpikeOffscreenDocument(): Promise<
+  | { ok: true }
+  | { ok: false; error: string }
+> {
+  try {
+    const response = await withTimeout(
+      chrome.runtime.sendMessage({
+        type: "OCR_SPIKE_OFFSCREEN_PING",
+      }) as Promise<{ ok?: boolean; ready?: boolean } | undefined>,
+      OCR_SPIKE_PING_TIMEOUT_MS
+    );
+
+    if (!response) {
+      return { ok: false, error: "no ping response" };
+    }
+
+    if (!response.ok || !response.ready) {
+      return { ok: false, error: "offscreen ping reported not ready" };
+    }
+
+    return { ok: true };
+  } catch (error) {
+    const messageText =
+      error instanceof Error ? error.message : "ping threw";
+    return { ok: false, error: messageText };
+  }
+}
+
+async function ensureOcrSpikeOffscreenDocument(): Promise<boolean> {
+  try {
+    if (await hasOcrSpikeOffscreenDocument()) {
+      return true;
+    }
+
+    const offscreenApi = (chrome as typeof chrome & {
+      offscreen?: {
+        createDocument: (options: {
+          url: string;
+          reasons: string[];
+          justification: string;
+        }) => Promise<void>;
+      };
+    }).offscreen;
+
+    if (!offscreenApi?.createDocument) {
+      return false;
+    }
+
+    await offscreenApi.createDocument({
+      url: OCR_SPIKE_OFFSCREEN_PATH,
+      reasons: ["BLOBS", "WORKERS"],
+      justification: "Run dev-only OCR spike in extension DOM context.",
+    });
+
+    return true;
+  } catch (error) {
+    const messageText =
+      error instanceof Error ? error.message : "Failed to create offscreen document";
+    if (!messageText.includes("Only a single offscreen document")) {
+      console.warn("[Sentinel][OCR Spike] Offscreen create failed:", messageText);
+      return false;
+    }
+    return true;
+  }
+}
+
+async function withTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | null = null;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<T>((_resolve, reject) => {
+        timer = setTimeout(() => reject(new Error("OCR timeout")), timeoutMs);
+      }),
+    ]);
+  } finally {
+    if (timer) {
+      clearTimeout(timer);
+    }
+  }
+}
+
+async function hasOcrSpikeOffscreenDocument(): Promise<boolean> {
+  const runtimeWithContexts = chrome.runtime as typeof chrome.runtime & {
+    getContexts?: (options: {
+      contextTypes?: string[];
+      documentUrls?: string[];
+    }) => Promise<Array<{ contextType?: string; documentUrl?: string }>>;
+  };
+
+  if (runtimeWithContexts.getContexts) {
+    const contexts = await runtimeWithContexts.getContexts({
+      contextTypes: ["OFFSCREEN_DOCUMENT"],
+      documentUrls: [chrome.runtime.getURL(OCR_SPIKE_OFFSCREEN_PATH)],
+    });
+    return contexts.length > 0;
+  }
+
+  const scope = self as unknown as {
+    clients: { matchAll: () => Promise<Array<{ url: string }>> };
+  };
+  const clients = await scope.clients.matchAll();
+  return clients.some((client) => client.url.includes(OCR_SPIKE_OFFSCREEN_PATH));
+}
+
 // ── Config helpers ─────────────────────────────────────────────────────────
 
 async function ensureDefaultConfig(): Promise<void> {
@@ -390,4 +623,27 @@ function isFetchMediaBytesMessage(
   message: { type: unknown; [key: string]: unknown }
 ): message is { type: "FETCH_MEDIA_BYTES"; url: string } {
   return typeof message.url === "string" && message.url.length > 0;
+}
+
+function isOcrSpikeRecognizeMessage(
+  message: { type: unknown; [key: string]: unknown }
+): message is {
+  type: "OCR_SPIKE_RECOGNIZE";
+  imageData: { width: number; height: number; data: number[] };
+} {
+  if (!("imageData" in message) || typeof message.imageData !== "object" || !message.imageData) {
+    return false;
+  }
+
+  const imageData = message.imageData as {
+    width?: unknown;
+    height?: unknown;
+    data?: unknown;
+  };
+
+  return (
+    typeof imageData.width === "number" &&
+    typeof imageData.height === "number" &&
+    Array.isArray(imageData.data)
+  );
 }

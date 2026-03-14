@@ -1,5 +1,6 @@
 import type { ModalityType } from "../shared/types";
 import { AnalysisPipeline } from "./analysis-pipeline";
+import { initOcrSpike } from "./dev/ocr-spike";
 import { StoryDetector } from "./story-detector";
 import { weightCalibrator } from "./scoring/weight-calibrator";
 
@@ -10,6 +11,7 @@ async function init() {
     return;
   }
 
+  console.log("[Sentinel] Build stamp:", __SENTINEL_BUILD_STAMP__);
   console.log("[Sentinel] Initialising on Instagram...");
 
   const pipeline = new AnalysisPipeline();
@@ -17,6 +19,7 @@ async function init() {
 
   detector = new StoryDetector(pipeline);
   detector.start();
+  initOcrSpike();
 
   chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     if (!message || typeof message !== "object" || !("type" in message)) {

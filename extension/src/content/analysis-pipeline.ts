@@ -155,12 +155,19 @@ export class AnalysisPipeline {
 
     console.log("[Sentinel] Score v2:", {
       username,
+      timestamp: score.timestamp,
       composite,
       confidence: overallConfidence.toFixed(2),
       modalities: Object.fromEntries(
         modalityResults
           .filter((r) => r.available)
           .map((r) => [r.modality, `${r.score}@${r.confidence.toFixed(2)}`])
+      ),
+      unavailableModalities: modalityResults
+        .filter((r) => !r.available)
+        .map((r) => r.modality),
+      inferenceMs: Object.fromEntries(
+        modalityResults.map((r) => [r.modality, Math.round(r.inferenceTimeMs)])
       ),
       weights: Object.fromEntries(
         Object.entries(effectiveWeights).map(([k, v]) => [k, (v ?? 0).toFixed(3)])
