@@ -1,6 +1,25 @@
 declare module "@xenova/transformers" {
   export const env: {
     allowRemoteModels?: boolean;
+    allowLocalModels?: boolean;
+    backends?: {
+      onnx?: {
+        wasm?: {
+          initTimeout?: number;
+          numThreads?: number;
+          proxy?: boolean;
+          simd?: boolean;
+          wasmPaths?:
+            | string
+            | {
+                "ort-wasm.wasm"?: string;
+                "ort-wasm-threaded.wasm"?: string;
+                "ort-wasm-simd.wasm"?: string;
+                "ort-wasm-simd-threaded.wasm"?: string;
+              };
+        };
+      };
+    };
     localModelPath?: string;
     [key: string]: unknown;
   };

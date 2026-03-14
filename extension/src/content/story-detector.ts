@@ -53,6 +53,7 @@ export class StoryDetector {
   private lastProcessedAt = 0;
   private lastProcessedSignature = "";
   private processedSignatures = new Map<string, number>();
+  private cachedUsernames = new Map<string, string>();
   private pipeline: AnalysisPipeline;
   private readonly THROTTLE_MS = 1500;
   private readonly POLL_MS = 1500;
@@ -101,8 +102,8 @@ export class StoryDetector {
       };
     }
 
-    const username = this.extractUsername(viewer);
-    const signature = this.buildStorySignature(viewer, username);
+    const signature = this.buildStorySignature(viewer);
+    const username = this.extractUsername(viewer, signature);
     const sponsoredEvidence = this.getSponsoredEvidence(viewer);
     if (sponsoredEvidence) {
       this.markSignatureProcessed(signature);
@@ -305,8 +306,8 @@ export class StoryDetector {
       return null;
     }
 
-    const username = this.extractUsername(viewer);
-    const signature = this.buildStorySignature(viewer, username);
+    const signature = this.buildStorySignature(viewer);
+    const username = this.extractUsername(viewer, signature);
     if (
       !force &&
       signature === this.lastProcessedSignature &&
@@ -337,9 +338,10 @@ export class StoryDetector {
 
     try {
       const result = await this.pipeline.analyse(viewer, username);
-      this.lastProcessedAt = now;
+      const completedAt = Date.now();
+      this.lastProcessedAt = completedAt;
       this.lastProcessedSignature = signature;
-      this.markSignatureProcessed(signature, now);
+      this.markSignatureProcessed(signature, completedAt);
 
       console.log("[Sentinel] Story analysed", {
         reason,
@@ -353,6 +355,8 @@ export class StoryDetector {
 
       return result;
     } catch (error) {
+      const failedAt = Date.now();
+      this.markSignatureProcessed(signature, failedAt);
       console.warn("[Sentinel] Analysis error:", error);
       return null;
     } finally {
@@ -360,23 +364,22 @@ export class StoryDetector {
     }
   }
 
-  private buildStorySignature(viewer: HTMLElement, username: string): string {
-    const mediaSource = this.getPrimaryMediaSource(viewer);
+  private buildStorySignature(viewer: HTMLElement): string {
+    const mediaSource = this.normalizeMediaSource(this.getPrimaryMediaSource(viewer));
     const routeKey = this.isStoryRouteActive() ? window.location.pathname : "";
-    const textSignature = extractText(viewer)
-      .replace(/\s+/g, " ")
-      .trim()
-      .slice(0, 120);
+    const textSignature =
+      mediaSource === "no-media"
+        ? extractText(viewer)
+            .replace(/\s+/g, " ")
+            .trim()
+            .slice(0, 120)
+        : "";
 
-    return `${username}|${routeKey}|${mediaSource}|${textSignature || ""}`;
+    return `${routeKey}|${mediaSource}|${textSignature || ""}`;
   }
 
   private hasRenderableStoryContent(viewer: HTMLElement): boolean {
-    if (findPrimaryStoryMedia(viewer) !== null) {
-      return true;
-    }
-
-    return extractText(viewer).trim().length >= 2;
+    return findPrimaryStoryMedia(viewer) !== null;
   }
 
   private getPrimaryMediaSource(viewer: HTMLElement): string {
@@ -395,18 +398,27 @@ export class StoryDetector {
     return "no-media";
   }
 
-  private extractUsername(viewer: HTMLElement): string {
+  private normalizeMediaSource(source: string): string {
+    if (!source || source === "no-media") {
+      return "no-media";
+    }
+
+    try {
+      const url = new URL(source, window.location.origin);
+      return `${url.origin}${url.pathname}`;
+    } catch {
+      return source.split("?")[0]?.split("#")[0] || source;
+    }
+  }
+
+  private extractUsername(viewer: HTMLElement, signature: string): string {
     const link = this.findUsernameLink(viewer);
     if (link) {
       const username = this.parseUsernameFromHref(link.getAttribute("href"));
       if (username) {
+        this.cachedUsernames.set(signature, username);
         return username;
       }
-    }
-
-    const routeUsername = this.parseUsernameFromStoryRoute();
-    if (routeUsername) {
-      return routeUsername;
     }
 
     const textCandidates = viewer.querySelectorAll(
@@ -419,11 +431,18 @@ export class StoryDetector {
         /^[A-Za-z0-9._]{1,30}$/.test(text) &&
         !RESERVED_PATHS.has(text.toLowerCase())
       ) {
+        this.cachedUsernames.set(signature, text);
         return text;
       }
     }
 
-    return `unknown_${Date.now()}`;
+    const routeUsername = this.parseUsernameFromStoryRoute();
+    if (routeUsername) {
+      this.cachedUsernames.set(signature, routeUsername);
+      return routeUsername;
+    }
+
+    return this.cachedUsernames.get(signature) ?? "unknown_story";
   }
 
   private wasRecentlyProcessed(signature: string, now: number): boolean {
@@ -442,6 +461,7 @@ export class StoryDetector {
     for (const [signature, processedAt] of this.processedSignatures) {
       if (now - processedAt >= this.SIGNATURE_TTL_MS) {
         this.processedSignatures.delete(signature);
+        this.cachedUsernames.delete(signature);
       }
     }
   }
@@ -454,6 +474,10 @@ export class StoryDetector {
   private parseUsernameFromStoryRoute(): string | null {
     const segments = window.location.pathname.split("/").filter(Boolean);
     if (segments[0]?.toLowerCase() !== "stories") {
+      return null;
+    }
+
+    if (segments[1]?.toLowerCase() === "highlights") {
       return null;
     }
 

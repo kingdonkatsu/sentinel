@@ -113,7 +113,15 @@ function captureMediaImageSync(media) {
     }
     try {
         const ctx = canvas.getContext("2d");
-        return ctx?.getImageData(0, 0, 224, 224) ?? null;
+        if (!ctx) {
+            return null;
+        }
+        try {
+            return ctx.getImageData(0, 0, 224, 224);
+        }
+        catch {
+            return null;
+        }
     }
     finally {
         canvas.remove();
@@ -151,13 +159,24 @@ function renderPriority(element) {
     return visibleArea - distancePenalty;
 }
 async function captureRemoteImage(image) {
-    const canvas = await captureRemoteImageCanvas(image, { width: 224, height: 224 });
+    const canvas = await captureRemoteImageCanvas(image, {
+        width: 224,
+        height: 224,
+    });
     if (!canvas) {
         return null;
     }
     try {
         const ctx = canvas.getContext("2d");
-        return ctx?.getImageData(0, 0, 224, 224) ?? null;
+        if (!ctx) {
+            return null;
+        }
+        try {
+            return ctx.getImageData(0, 0, 224, 224);
+        }
+        catch {
+            return null;
+        }
     }
     finally {
         canvas.remove();

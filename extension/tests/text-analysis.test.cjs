@@ -130,6 +130,12 @@ test("semantic text analyser maps OCR statuses and scores OCR text locally", asy
         };
       },
     },
+    semanticScorer: {
+      dispose() {},
+      async scoreText() {
+        return { maxSimilarity: 0.78 };
+      },
+    },
   });
   const noTextAnalyser = new SemanticTextAnalyser({
     ocrRunner: {
@@ -173,4 +179,38 @@ test("semantic text analyser maps OCR statuses and scores OCR text locally", asy
   assert.equal(errorResult.available, false);
   assert.equal(errorResult.status, "uncertain");
   assert.equal(errorResult.score, 50);
+});
+
+test("semantic text analyser uses the semantic scorer for neutral OCR text", async () => {
+  let semanticCalls = 0;
+
+  const analyser = new SemanticTextAnalyser({
+    ocrRunner: {
+      async recognizeViewer() {
+        return {
+          status: "ok",
+          text: "Sometimes I feel like I'm already a ghost.",
+          latencyMs: 101,
+          confidence: 93,
+          strategy: "mid-band-binary",
+        };
+      },
+    },
+    semanticScorer: {
+      dispose() {},
+      async scoreText(text) {
+        semanticCalls += 1;
+        assert.equal(text, "Sometimes I feel like I'm already a ghost.");
+        return { maxSimilarity: 0.82 };
+      },
+    },
+  });
+
+  const result = await analyser.analyse({});
+
+  assert.equal(semanticCalls, 1);
+  assert.equal(result.available, true);
+  assert.equal(result.status, "ok");
+  assert.ok(result.score > 50);
+  assert.ok(result.confidence > 0.5);
 });

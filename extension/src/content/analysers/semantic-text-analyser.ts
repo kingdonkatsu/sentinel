@@ -27,16 +27,18 @@ import { storyOcr } from "../ocr/story-ocr";
 import { findPrimaryStoryMedia } from "../image-analyser";
 import { analyseText } from "../text-analyser";
 import { releaseString } from "../privacy/secure-cleanup";
-import { ALL_DISTRESS_PHRASES, hasUrgencySignal } from "./distress-phrases";
+import {
+  SEMANTIC_MODEL_TIMEOUT_MS,
+  getSemanticTextModelHost,
+  type SemanticScorerLike,
+} from "../semantic/semantic-host-client";
+import { hasUrgencySignal } from "./distress-phrases";
 import {
   mapSimilarityToRiskScore,
   similarityToConfidence,
 } from "./semantic-text-scoring";
 
 // Bump this when the phrase list changes — forces cache invalidation
-const PHRASE_LIST_VERSION = 1;
-const PHRASE_CACHE_KEY = "sentinel_phrase_embeddings_v1";
-
 // Minimum text length to bother running the model
 const MIN_TEXT_LENGTH = 10;
 const OCR_TIMEOUT_MS = 3000;
@@ -45,31 +47,47 @@ const OCR_TIMEOUT_MS = 3000;
 const PREFILTER_HIGH = 78;
 const PREFILTER_LOW = 22;
 
-type EmbedderPipeline = {
-  (texts: string[], options: Record<string, unknown>): Promise<{ data: Float32Array }[]>;
-};
-
 interface StoryOcrRunnerLike {
   recognizeViewer(viewer: HTMLElement, timeoutMs?: number): Promise<OcrResult>;
 }
 
 interface SemanticTextAnalyserDeps {
   ocrRunner?: StoryOcrRunnerLike;
+  semanticScorer?: SemanticScorerLike;
+}
+
+type TextScoringPath =
+  | "keyword-short-text"
+  | "keyword-prefilter"
+  | "keyword-fallback-no-model"
+  | "keyword-fallback-no-phrase-cache"
+  | "keyword-fallback-no-embedding"
+  | "keyword-fallback-model-error"
+  | "minilm";
+
+interface TextScoreDebug {
+  keywordScore: number;
+  maxSimilarity?: number;
+  minilmRan: boolean;
+  scoringPath: TextScoringPath;
+  semanticScore?: number;
+  urgencyBoostApplied: boolean;
+}
+
+interface TextScoreOutcome {
+  debug: TextScoreDebug;
+  result: ModalityResult;
 }
 
 export class SemanticTextAnalyser implements Analyser {
   readonly modality = "text" as const;
 
-  private embedder: EmbedderPipeline | null = null;
-  private modelLoading = false;
-  private modelLoadAttempted = false;
   private readonly ocrRunner: StoryOcrRunnerLike;
-
-  /** Pre-computed phrase embeddings — [phraseIndex][dim] */
-  private phraseEmbeddings: Float32Array[] | null = null;
+  private readonly semanticScorer: SemanticScorerLike;
 
   constructor(deps: SemanticTextAnalyserDeps = {}) {
     this.ocrRunner = deps.ocrRunner ?? storyOcr;
+    this.semanticScorer = deps.semanticScorer ?? getSemanticTextModelHost();
   }
 
   isAvailable(viewer: HTMLElement): boolean {
@@ -100,7 +118,7 @@ export class SemanticTextAnalyser implements Analyser {
 
     let rawText: string | null = ocrResult.text;
     try {
-      const result = await this.analyseProvidedText(rawText);
+      const { result, debug } = await this.analyseProvidedText(rawText);
       const finalResult = {
         ...result,
         inferenceTimeMs: performance.now() - t0,
@@ -114,6 +132,17 @@ export class SemanticTextAnalyser implements Analyser {
         strategy: ocrResult.strategy,
         textScoringRan: true,
       });
+      console.log("[Sentinel][Story Text]", {
+        ocrText: rawText,
+        textScore: finalResult.score,
+        textConfidence: finalResult.confidence,
+        scoringPath: debug.scoringPath,
+        minilmRan: debug.minilmRan,
+        keywordScore: debug.keywordScore,
+        semanticScore: debug.semanticScore ?? null,
+        maxSimilarity: debug.maxSimilarity ?? null,
+        urgencyBoostApplied: debug.urgencyBoostApplied,
+      });
 
       return finalResult;
     } finally {
@@ -121,11 +150,19 @@ export class SemanticTextAnalyser implements Analyser {
     }
   }
 
-  private async analyseProvidedText(rawText: string): Promise<ModalityResult> {
+  private async analyseProvidedText(rawText: string): Promise<TextScoreOutcome> {
     const t0 = performance.now();
     const normalizedText = rawText.trim();
     if (!normalizedText) {
-      return this.result(50, 0, false, performance.now() - t0, "missing");
+      return {
+        debug: {
+          keywordScore: 50,
+          minilmRan: false,
+          scoringPath: "keyword-short-text",
+          urgencyBoostApplied: false,
+        },
+        result: this.result(50, 0, false, performance.now() - t0, "missing"),
+      };
     }
 
     // ── Fast-path keyword pre-filter ─────────────────────────────────────
@@ -133,71 +170,51 @@ export class SemanticTextAnalyser implements Analyser {
     const keywordConfidence = this.keywordConfidence(normalizedText, keywordScore);
 
     if (normalizedText.length < MIN_TEXT_LENGTH) {
-      return this.result(
-        keywordScore,
-        keywordConfidence,
-        true,
-        performance.now() - t0,
-        "ok"
-      );
+      return {
+        debug: {
+          keywordScore,
+          minilmRan: false,
+          scoringPath: "keyword-short-text",
+          urgencyBoostApplied: false,
+        },
+        result: this.result(
+          keywordScore,
+          keywordConfidence,
+          true,
+          performance.now() - t0,
+          "ok"
+        ),
+      };
     }
 
     if (keywordScore > PREFILTER_HIGH || keywordScore < PREFILTER_LOW) {
-      return this.result(
-        keywordScore,
-        keywordConfidence,
-        true,
-        performance.now() - t0,
-        "ok"
-      );
+      return {
+        debug: {
+          keywordScore,
+          minilmRan: false,
+          scoringPath: "keyword-prefilter",
+          urgencyBoostApplied: false,
+        },
+        result: this.result(
+          keywordScore,
+          keywordConfidence,
+          true,
+          performance.now() - t0,
+          "ok"
+        ),
+      };
     }
 
     // ── Urgency detection ────────────────────────────────────────────────
     const hasUrgency = hasUrgencySignal(normalizedText);
 
     // ── ML semantic scoring ──────────────────────────────────────────────
-    const embedder = await this.loadEmbedder();
-
-    if (!embedder) {
-      return this.result(
-        keywordScore,
-        keywordConfidence * 0.8,
-        true,
-        performance.now() - t0,
-        "ok"
-      );
-    }
-
     try {
-      const phraseEmbeds = await this.getPhraseEmbeddings(embedder);
-      if (!phraseEmbeds) {
-        return this.result(
-          keywordScore,
-          keywordConfidence,
-          true,
-          performance.now() - t0,
-          "ok"
-        );
-      }
-
-      const textEmbedOutput = await embedder([normalizedText], {
-        pooling: "mean",
-        normalize: true,
-      });
-      const textEmbed = textEmbedOutput[0]?.data ?? null;
-
-      if (!textEmbed) {
-        return this.result(
-          keywordScore,
-          keywordConfidence,
-          true,
-          performance.now() - t0,
-          "ok"
-        );
-      }
-
-      // Max cosine similarity to any distress phrase
-      const maxSimilarity = this.maxCosineSimilarity(textEmbed, phraseEmbeds);
+      const semanticResult = await this.semanticScorer.scoreText(
+        normalizedText,
+        SEMANTIC_MODEL_TIMEOUT_MS
+      );
+      const maxSimilarity = semanticResult.maxSimilarity;
 
       // Map similarity [0, 1] → risk score
       // similarity ≥ 0.85 → high risk (≥80), ≤ 0.3 → low risk (≤30)
@@ -212,116 +229,40 @@ export class SemanticTextAnalyser implements Analyser {
       // Confidence: driven by similarity strength
       const confidence = similarityToConfidence(maxSimilarity);
 
-      return this.result(finalScore, confidence, true, performance.now() - t0, "ok");
-    } catch {
-      return this.result(
-        keywordScore,
-        keywordConfidence,
-        true,
-        performance.now() - t0,
-        "ok"
-      );
-    }
-  }
-
-  // ─── Embedding utilities ────────────────────────────────────────────────
-
-  private maxCosineSimilarity(
-    queryEmbed: Float32Array,
-    phraseEmbeds: Float32Array[]
-  ): number {
-    let max = 0;
-    for (const phraseEmbed of phraseEmbeds) {
-      const sim = cosineSimilarity(queryEmbed, phraseEmbed);
-      if (sim > max) max = sim;
-    }
-    return max;
-  }
-
-  /**
-   * Returns cached phrase embeddings or computes them on first call.
-   */
-  private async getPhraseEmbeddings(
-    embedder: EmbedderPipeline
-  ): Promise<Float32Array[] | null> {
-    if (this.phraseEmbeddings) return this.phraseEmbeddings;
-
-    // Try loading from persistent cache first
-    const cached = await this.loadPhraseCache();
-    if (cached) {
-      this.phraseEmbeddings = cached;
-      return cached;
-    }
-
-    // Compute embeddings for all 50 distress phrases
-    try {
-      const outputs = await embedder(ALL_DISTRESS_PHRASES as unknown as string[], {
-        pooling: "mean",
-        normalize: true,
-      });
-      const embeds = outputs.map((o) => new Float32Array(o.data));
-      this.phraseEmbeddings = embeds;
-      await this.savePhraseCache(embeds);
-      return embeds;
-    } catch {
-      return null;
-    }
-  }
-
-  // ─── Model loading ──────────────────────────────────────────────────────
-
-  private async loadEmbedder(): Promise<EmbedderPipeline | null> {
-    if (this.embedder) return this.embedder;
-    if (this.modelLoading || this.modelLoadAttempted) return null;
-
-    this.modelLoading = true;
-    this.modelLoadAttempted = true;
-
-    try {
-      const { pipeline, env } = await import("@xenova/transformers");
-
-      // Point Transformers.js at bundled models — no remote downloads
-      env.allowRemoteModels = false;
-      env.localModelPath = chrome.runtime.getURL("models/");
-
-      const pipe = await pipeline("feature-extraction", "Xenova/all-MiniLM-L6-v2");
-      // The Transformers.js pipeline call signature matches EmbedderPipeline
-      this.embedder = pipe as unknown as EmbedderPipeline;
-      console.log("[Sentinel] MiniLM-L6 loaded");
-      return this.embedder;
-    } catch {
-      // Model files not bundled yet — silent fallback to keywords
-      return null;
-    } finally {
-      this.modelLoading = false;
-    }
-  }
-
-  // ─── Cache helpers ──────────────────────────────────────────────────────
-
-  private async loadPhraseCache(): Promise<Float32Array[] | null> {
-    try {
-      const result = await chrome.storage.local.get(PHRASE_CACHE_KEY);
-      const entry = result[PHRASE_CACHE_KEY] as
-        | { version: number; data: number[][] }
-        | undefined;
-      if (!entry || entry.version !== PHRASE_LIST_VERSION) return null;
-      return entry.data.map((arr) => new Float32Array(arr));
-    } catch {
-      return null;
-    }
-  }
-
-  private async savePhraseCache(embeds: Float32Array[]): Promise<void> {
-    try {
-      await chrome.storage.local.set({
-        [PHRASE_CACHE_KEY]: {
-          version: PHRASE_LIST_VERSION,
-          data: embeds.map((e) => Array.from(e)),
+      return {
+        debug: {
+          keywordScore,
+          maxSimilarity,
+          minilmRan: true,
+          scoringPath: "minilm",
+          semanticScore,
+          urgencyBoostApplied: hasUrgency,
         },
-      });
-    } catch {
-      // cache failure is non-critical
+        result: this.result(
+          finalScore,
+          confidence,
+          true,
+          performance.now() - t0,
+          "ok"
+        ),
+      };
+    } catch (error) {
+      console.warn("[Sentinel] MiniLM-L6 scoring failed", error);
+      return {
+        debug: {
+          keywordScore,
+          minilmRan: false,
+          scoringPath: "keyword-fallback-model-error",
+          urgencyBoostApplied: false,
+        },
+        result: this.result(
+          keywordScore,
+          keywordConfidence,
+          true,
+          performance.now() - t0,
+          "ok"
+        ),
+      };
     }
   }
 
@@ -353,21 +294,6 @@ export class SemanticTextAnalyser implements Analyser {
   }
 
   dispose(): void {
-    this.embedder = null;
-    this.phraseEmbeddings = null;
-    this.modelLoadAttempted = false;
+    this.semanticScorer.dispose();
   }
-}
-
-function cosineSimilarity(a: Float32Array, b: Float32Array): number {
-  let dot = 0;
-  let normA = 0;
-  let normB = 0;
-  for (let i = 0; i < a.length; i++) {
-    dot += (a[i] ?? 0) * (b[i] ?? 0);
-    normA += (a[i] ?? 0) ** 2;
-    normB += (b[i] ?? 0) ** 2;
-  }
-  const denom = Math.sqrt(normA) * Math.sqrt(normB);
-  return denom === 0 ? 0 : dot / denom;
 }

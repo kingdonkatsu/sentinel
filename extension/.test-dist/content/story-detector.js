@@ -49,6 +49,7 @@ class StoryDetector {
     lastProcessedAt = 0;
     lastProcessedSignature = "";
     processedSignatures = new Map();
+    cachedUsernames = new Map();
     pipeline;
     THROTTLE_MS = 1500;
     POLL_MS = 1500;
@@ -86,8 +87,8 @@ class StoryDetector {
                 message: "No Story viewer detected. Open an Instagram Story first.",
             };
         }
-        const username = this.extractUsername(viewer);
-        const signature = this.buildStorySignature(viewer, username);
+        const signature = this.buildStorySignature(viewer);
+        const username = this.extractUsername(viewer, signature);
         const sponsoredEvidence = this.getSponsoredEvidence(viewer);
         if (sponsoredEvidence) {
             this.markSignatureProcessed(signature);
@@ -239,8 +240,8 @@ class StoryDetector {
         if (!force && now - this.lastProcessedAt < this.THROTTLE_MS) {
             return null;
         }
-        const username = this.extractUsername(viewer);
-        const signature = this.buildStorySignature(viewer, username);
+        const signature = this.buildStorySignature(viewer);
+        const username = this.extractUsername(viewer, signature);
         if (!force &&
             signature === this.lastProcessedSignature &&
             now - this.lastProcessedAt < this.DUPLICATE_WINDOW_MS) {
@@ -265,9 +266,10 @@ class StoryDetector {
         this.isProcessing = true;
         try {
             const result = await this.pipeline.analyse(viewer, username);
-            this.lastProcessedAt = now;
+            const completedAt = Date.now();
+            this.lastProcessedAt = completedAt;
             this.lastProcessedSignature = signature;
-            this.markSignatureProcessed(signature, now);
+            this.markSignatureProcessed(signature, completedAt);
             console.log("[Sentinel] Story analysed", {
                 reason,
                 username: result.score.username,
@@ -280,6 +282,8 @@ class StoryDetector {
             return result;
         }
         catch (error) {
+            const failedAt = Date.now();
+            this.markSignatureProcessed(signature, failedAt);
             console.warn("[Sentinel] Analysis error:", error);
             return null;
         }
@@ -287,20 +291,19 @@ class StoryDetector {
             this.isProcessing = false;
         }
     }
-    buildStorySignature(viewer, username) {
-        const mediaSource = this.getPrimaryMediaSource(viewer);
+    buildStorySignature(viewer) {
+        const mediaSource = this.normalizeMediaSource(this.getPrimaryMediaSource(viewer));
         const routeKey = this.isStoryRouteActive() ? window.location.pathname : "";
-        const textSignature = (0, text_analyser_1.extractText)(viewer)
-            .replace(/\s+/g, " ")
-            .trim()
-            .slice(0, 120);
-        return `${username}|${routeKey}|${mediaSource}|${textSignature || ""}`;
+        const textSignature = mediaSource === "no-media"
+            ? (0, text_analyser_1.extractText)(viewer)
+                .replace(/\s+/g, " ")
+                .trim()
+                .slice(0, 120)
+            : "";
+        return `${routeKey}|${mediaSource}|${textSignature || ""}`;
     }
     hasRenderableStoryContent(viewer) {
-        if ((0, image_analyser_1.findPrimaryStoryMedia)(viewer) !== null) {
-            return true;
-        }
-        return (0, text_analyser_1.extractText)(viewer).trim().length >= 2;
+        return (0, image_analyser_1.findPrimaryStoryMedia)(viewer) !== null;
     }
     getPrimaryMediaSource(viewer) {
         const media = (0, image_analyser_1.findPrimaryStoryMedia)(viewer);
@@ -313,17 +316,26 @@ class StoryDetector {
         }
         return "no-media";
     }
-    extractUsername(viewer) {
+    normalizeMediaSource(source) {
+        if (!source || source === "no-media") {
+            return "no-media";
+        }
+        try {
+            const url = new URL(source, window.location.origin);
+            return `${url.origin}${url.pathname}`;
+        }
+        catch {
+            return source.split("?")[0]?.split("#")[0] || source;
+        }
+    }
+    extractUsername(viewer, signature) {
         const link = this.findUsernameLink(viewer);
         if (link) {
             const username = this.parseUsernameFromHref(link.getAttribute("href"));
             if (username) {
+                this.cachedUsernames.set(signature, username);
                 return username;
             }
-        }
-        const routeUsername = this.parseUsernameFromStoryRoute();
-        if (routeUsername) {
-            return routeUsername;
         }
         const textCandidates = viewer.querySelectorAll("header span, header a, span[dir='auto']");
         for (const candidate of textCandidates) {
@@ -331,10 +343,16 @@ class StoryDetector {
             if (text &&
                 /^[A-Za-z0-9._]{1,30}$/.test(text) &&
                 !RESERVED_PATHS.has(text.toLowerCase())) {
+                this.cachedUsernames.set(signature, text);
                 return text;
             }
         }
-        return `unknown_${Date.now()}`;
+        const routeUsername = this.parseUsernameFromStoryRoute();
+        if (routeUsername) {
+            this.cachedUsernames.set(signature, routeUsername);
+            return routeUsername;
+        }
+        return this.cachedUsernames.get(signature) ?? "unknown_story";
     }
     wasRecentlyProcessed(signature, now) {
         this.pruneProcessedSignatures(now);
@@ -350,6 +368,7 @@ class StoryDetector {
         for (const [signature, processedAt] of this.processedSignatures) {
             if (now - processedAt >= this.SIGNATURE_TTL_MS) {
                 this.processedSignatures.delete(signature);
+                this.cachedUsernames.delete(signature);
             }
         }
     }
@@ -360,6 +379,9 @@ class StoryDetector {
     parseUsernameFromStoryRoute() {
         const segments = window.location.pathname.split("/").filter(Boolean);
         if (segments[0]?.toLowerCase() !== "stories") {
+            return null;
+        }
+        if (segments[1]?.toLowerCase() === "highlights") {
             return null;
         }
         return this.parseUsernameFromHref(`/${segments[1] ?? ""}/`);
