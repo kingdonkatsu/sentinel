@@ -1,18 +1,12 @@
 import { findPrimaryStoryMedia } from "../image-analyser";
 import {
-  OCR_HOST_REQUEST_TYPE,
-  OCR_HOST_RESPONSE_TYPE,
-  type OcrHostMedia,
-  type OcrHostRequest,
-  type OcrHostResponse,
-} from "./ocr-spike-bridge";
+  OCR_DEFAULT_TIMEOUT_MS,
+  storyOcr,
+  type OcrResult,
+} from "../ocr/story-ocr";
 
 const OCR_TRIGGER_EVENT = "sentinel:ocr-spike";
-const OCR_TIMEOUT_MS = 3000;
-const OCR_MAX_WIDTH = 1080;
-const OCR_MAX_HEIGHT = 1920;
 const LOG_PREFIX = "[Sentinel][OCR Spike]";
-const OCR_HOST_PAGE = "src/content/dev/ocr-host.html";
 
 type OverlayState = "running" | "success" | "empty" | "error";
 
@@ -29,22 +23,9 @@ interface OverlayPayload {
   confidence?: number | null;
 }
 
-interface OcrSummary {
-  captureHeight: number;
-  captureWidth: number;
-  confidence: number | null;
-  confidentWordCount: number;
-  sourceHeight: number;
-  sourceWidth: number;
-  strategy: string;
-  text: string;
-  totalWordCount: number;
-}
-
 export class DevOcrSpike {
   private readonly getViewer: () => HTMLElement | null;
   private readonly overlay = new OcrSpikeOverlay();
-  private readonly host = new OcrHostClient();
   private isRunning = false;
   private lastProgress = "idle";
 
@@ -53,13 +34,11 @@ export class DevOcrSpike {
   }
 
   start(): void {
-    this.host.start();
     document.addEventListener("keydown", this.onKeyDown, true);
     document.addEventListener(OCR_TRIGGER_EVENT, this.onCustomTrigger as EventListener);
   }
 
   stop(): void {
-    this.host.stop();
     document.removeEventListener("keydown", this.onKeyDown, true);
     document.removeEventListener(
       OCR_TRIGGER_EVENT,
@@ -119,51 +98,19 @@ export class DevOcrSpike {
         detail: "Inspecting story media",
       });
 
-      const mediaRequest = buildHostMediaRequest(
-        media,
-        OCR_MAX_WIDTH,
-        OCR_MAX_HEIGHT
-      );
       this.overlay.render({
         state: "running",
         title: "OCR spike running",
-        detail: `Fetching ${mediaRequest.kind} media in extension OCR host`,
+        detail: `Running shared OCR on ${media instanceof HTMLImageElement ? "image" : "video"} media`,
       });
 
       this.lastProgress = "running OCR";
-      const summary = await this.host.recognize(mediaRequest, OCR_TIMEOUT_MS);
-      const latencyMs = Math.round(performance.now() - startedAt);
       const mediaType = media instanceof HTMLImageElement ? "image" : "video";
-      const sourceDimensions = `${summary.sourceWidth}x${summary.sourceHeight}`;
-      const captureDimensions = `${summary.captureWidth}x${summary.captureHeight}`;
+      const result = await storyOcr.recognizeViewer(viewer, OCR_DEFAULT_TIMEOUT_MS);
+      const latencyMs = Math.round(performance.now() - startedAt);
 
-      console.groupCollapsed(
-        `${LOG_PREFIX} ${summary.text ? "result" : "empty"} (${latencyMs}ms)`
-      );
-      console.log("trigger", trigger);
-      console.log("capture", {
-        mediaType,
-        sourceDimensions,
-        captureDimensions,
-      });
-      console.log("ocr", {
-        latencyMs,
-        confidence: summary.confidence,
-        totalWordCount: summary.totalWordCount,
-        confidentWordCount: summary.confidentWordCount,
-        strategy: summary.strategy,
-        text: summary.text || "(empty)",
-      });
-      console.groupEnd();
-
-      this.overlay.render({
-        state: summary.text ? "success" : "empty",
-        title: summary.text ? "OCR spike result" : "OCR spike empty",
-        detail: `${mediaType} ${captureDimensions} via ${summary.strategy}`,
-        latencyMs,
-        confidence: summary.confidence,
-        text: summary.text || "(empty)",
-      });
+      renderResultLog(trigger, mediaType, result, latencyMs);
+      this.overlay.render(buildOverlayPayload(mediaType, result, latencyMs));
     } catch (error) {
       const latencyMs = Math.round(performance.now() - startedAt);
       const message = normalizeError(error);
@@ -183,141 +130,6 @@ export class DevOcrSpike {
     } finally {
       this.isRunning = false;
     }
-  }
-}
-
-class OcrHostClient {
-  private iframe: HTMLIFrameElement | null = null;
-  private frameReady: Promise<Window> | null = null;
-  private readonly pending = new Map<
-    string,
-    {
-      reject: (error: Error) => void;
-      resolve: (result: OcrSummary) => void;
-    }
-  >();
-  private readonly hostUrl = chrome.runtime.getURL(OCR_HOST_PAGE);
-  private readonly hostOrigin = new URL(this.hostUrl).origin;
-
-  start(): void {
-    window.addEventListener("message", this.onMessage);
-  }
-
-  stop(): void {
-    window.removeEventListener("message", this.onMessage);
-
-    for (const { reject } of this.pending.values()) {
-      reject(new Error("OCR host shut down"));
-    }
-    this.pending.clear();
-
-    if (this.iframe) {
-      this.iframe.remove();
-      this.iframe = null;
-    }
-
-    this.frameReady = null;
-  }
-
-  async recognize(
-    media: OcrHostMedia,
-    timeoutMs: number
-  ): Promise<OcrSummary> {
-    const targetWindow = await this.ensureFrame();
-    const requestId = crypto.randomUUID();
-
-    return new Promise<OcrSummary>((resolve, reject) => {
-      this.pending.set(requestId, { resolve, reject });
-
-      const request: OcrHostRequest = {
-        type: OCR_HOST_REQUEST_TYPE,
-        requestId,
-        media,
-        timeoutMs,
-      };
-
-      targetWindow.postMessage(request, this.hostOrigin);
-    });
-  }
-
-  private readonly onMessage = (event: MessageEvent<unknown>): void => {
-    if (
-      event.origin !== this.hostOrigin ||
-      !event.data ||
-      typeof event.data !== "object" ||
-      (event.data as { type?: unknown }).type !== OCR_HOST_RESPONSE_TYPE
-    ) {
-      return;
-    }
-
-    const response = event.data as OcrHostResponse;
-    const pending = this.pending.get(response.requestId);
-    if (!pending) {
-      return;
-    }
-
-    this.pending.delete(response.requestId);
-
-    if (!response.ok || !response.result) {
-      pending.reject(new Error(response.error || "OCR host failed"));
-      return;
-    }
-
-    pending.resolve(response.result);
-  };
-
-  private async ensureFrame(): Promise<Window> {
-    if (this.iframe?.contentWindow) {
-      return this.iframe.contentWindow;
-    }
-
-    if (this.frameReady) {
-      return this.frameReady;
-    }
-
-    this.frameReady = new Promise<Window>((resolve, reject) => {
-      const iframe = document.createElement("iframe");
-      iframe.id = "sentinel-ocr-host-frame";
-      iframe.src = this.hostUrl;
-      iframe.style.display = "none";
-      iframe.setAttribute("aria-hidden", "true");
-
-      iframe.addEventListener(
-        "load",
-        () => {
-          if (!iframe.contentWindow) {
-            reject(new Error("OCR host iframe loaded without contentWindow"));
-            return;
-          }
-
-          this.iframe = iframe;
-          resolve(iframe.contentWindow);
-        },
-        { once: true }
-      );
-
-      iframe.addEventListener(
-        "error",
-        () => {
-          this.frameReady = null;
-          reject(new Error("Failed to load OCR host iframe"));
-        },
-        { once: true }
-      );
-
-      (document.documentElement || document.body || document.head).appendChild(
-        iframe
-      );
-    }).catch((error) => {
-      this.frameReady = null;
-      if (this.iframe) {
-        this.iframe.remove();
-        this.iframe = null;
-      }
-      throw error;
-    });
-
-    return this.frameReady;
   }
 }
 
@@ -483,6 +295,94 @@ function normalizeWhitespace(value: string): string {
   return value.replace(/\s+/g, " ").trim();
 }
 
+function renderResultLog(
+  trigger: "keyboard" | "custom-event",
+  mediaType: "image" | "video",
+  result: OcrResult,
+  latencyMs: number
+): void {
+  const sourceDimensions =
+    typeof result.sourceWidth === "number" && typeof result.sourceHeight === "number"
+      ? `${result.sourceWidth}x${result.sourceHeight}`
+      : "n/a";
+  const captureDimensions =
+    typeof result.captureWidth === "number" && typeof result.captureHeight === "number"
+      ? `${result.captureWidth}x${result.captureHeight}`
+      : "n/a";
+
+  if (result.status === "error" || result.status === "timeout") {
+    console.warn(`${LOG_PREFIX} failed`, {
+      latencyMs,
+      error: result.error || result.status,
+      ocrStatus: result.status,
+      strategy: result.strategy,
+    });
+    return;
+  }
+
+  console.groupCollapsed(
+    `${LOG_PREFIX} ${result.status === "ok" ? "result" : "empty"} (${latencyMs}ms)`
+  );
+  console.log("trigger", trigger);
+  console.log("capture", {
+    mediaType,
+    sourceDimensions,
+    captureDimensions,
+  });
+  console.log("ocr", {
+    latencyMs,
+    status: result.status,
+    confidence: result.confidence ?? null,
+    totalWordCount: result.totalWordCount ?? null,
+    confidentWordCount: result.confidentWordCount ?? null,
+    strategy: result.strategy,
+    text: result.status === "ok" ? result.text : "(empty)",
+  });
+  console.groupEnd();
+}
+
+function buildOverlayPayload(
+  mediaType: "image" | "video",
+  result: OcrResult,
+  latencyMs: number
+): OverlayPayload {
+  const captureDimensions =
+    typeof result.captureWidth === "number" && typeof result.captureHeight === "number"
+      ? `${result.captureWidth}x${result.captureHeight}`
+      : "n/a";
+
+  if (result.status === "ok") {
+    return {
+      state: "success",
+      title: "OCR spike result",
+      detail: `${mediaType} ${captureDimensions} via ${result.strategy ?? "ocr"}`,
+      latencyMs,
+      confidence: result.confidence ?? null,
+      text: result.text,
+    };
+  }
+
+  if (result.status === "no_text") {
+    return {
+      state: "empty",
+      title: "OCR spike empty",
+      detail: `${mediaType} ${captureDimensions} via ${result.strategy ?? "ocr"}`,
+      latencyMs,
+      confidence: result.confidence ?? null,
+      text: "(empty)",
+    };
+  }
+
+  return {
+    state: "error",
+    title: result.status === "timeout" ? "OCR spike timeout" : "OCR spike failed",
+    detail: result.error || result.status,
+    latencyMs,
+    confidence: result.confidence ?? null,
+    text: "",
+  };
+}
+
 function escapeHtml(value: string): string {
   return value
     .replace(/&/g, "&amp;")
@@ -544,36 +444,4 @@ function normalizeError(error: unknown): string {
   } catch {
     return "OCR spike failed unexpectedly";
   }
-}
-
-function buildHostMediaRequest(
-  media: HTMLImageElement | HTMLVideoElement,
-  maxWidth: number,
-  maxHeight: number
-): OcrHostMedia {
-  const sourceUrl =
-    media instanceof HTMLImageElement
-      ? media.currentSrc || media.src
-      : media.currentSrc || media.src;
-
-  if (!sourceUrl) {
-    throw new Error("Story media URL is missing");
-  }
-
-  if (media instanceof HTMLImageElement) {
-    return {
-      kind: "image",
-      maxHeight,
-      maxWidth,
-      url: sourceUrl,
-    };
-  }
-
-  return {
-    currentTime: media.currentTime,
-    kind: "video",
-    maxHeight,
-    maxWidth,
-    url: sourceUrl,
-  };
 }

@@ -109,6 +109,7 @@ class AnalysisPipeline {
             username,
             composite,
             confidence: overallConfidence.toFixed(2),
+            textStatus: textResult.status ?? (textResult.available ? "ok" : "missing"),
             modalities: Object.fromEntries(modalityResults
                 .filter((r) => r.available)
                 .map((r) => [r.modality, `${r.score}@${r.confidence.toFixed(2)}`])),

@@ -50,6 +50,8 @@ export type ModalityType =
   | "audio"
   | "metadata";
 
+export type ModalityStatus = "ok" | "missing" | "uncertain";
+
 export interface ModalityResult {
   modality: ModalityType;
   /** Risk score 0-100 */
@@ -59,6 +61,7 @@ export interface ModalityResult {
   /** False if the modality had no content to analyse (e.g. no text present) */
   available: boolean;
   inferenceTimeMs: number;
+  status?: ModalityStatus;
 }
 
 /** Common interface all analysers must implement */

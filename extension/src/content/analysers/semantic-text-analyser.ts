@@ -22,7 +22,10 @@
  */
 
 import type { Analyser, ModalityResult } from "../../shared/types";
-import { analyseText, extractText } from "../text-analyser";
+import type { OcrResult } from "../ocr/story-ocr";
+import { storyOcr } from "../ocr/story-ocr";
+import { findPrimaryStoryMedia } from "../image-analyser";
+import { analyseText } from "../text-analyser";
 import { releaseString } from "../privacy/secure-cleanup";
 import { ALL_DISTRESS_PHRASES, hasUrgencySignal } from "./distress-phrases";
 import {
@@ -36,6 +39,7 @@ const PHRASE_CACHE_KEY = "sentinel_phrase_embeddings_v1";
 
 // Minimum text length to bother running the model
 const MIN_TEXT_LENGTH = 10;
+const OCR_TIMEOUT_MS = 3000;
 
 // Keyword pre-filter thresholds
 const PREFILTER_HIGH = 78;
@@ -45,69 +49,151 @@ type EmbedderPipeline = {
   (texts: string[], options: Record<string, unknown>): Promise<{ data: Float32Array }[]>;
 };
 
+interface StoryOcrRunnerLike {
+  recognizeViewer(viewer: HTMLElement, timeoutMs?: number): Promise<OcrResult>;
+}
+
+interface SemanticTextAnalyserDeps {
+  ocrRunner?: StoryOcrRunnerLike;
+}
+
 export class SemanticTextAnalyser implements Analyser {
   readonly modality = "text" as const;
 
   private embedder: EmbedderPipeline | null = null;
   private modelLoading = false;
   private modelLoadAttempted = false;
+  private readonly ocrRunner: StoryOcrRunnerLike;
 
   /** Pre-computed phrase embeddings — [phraseIndex][dim] */
   private phraseEmbeddings: Float32Array[] | null = null;
 
+  constructor(deps: SemanticTextAnalyserDeps = {}) {
+    this.ocrRunner = deps.ocrRunner ?? storyOcr;
+  }
+
   isAvailable(viewer: HTMLElement): boolean {
-    const text = extractText(viewer);
-    return text.trim().length >= MIN_TEXT_LENGTH;
+    return findPrimaryStoryMedia(viewer) !== null;
   }
 
   async analyse(viewer: HTMLElement): Promise<ModalityResult> {
     const t0 = performance.now();
-    let rawText: string | null = extractText(viewer);
+    const ocrResult = await this.ocrRunner.recognizeViewer(viewer, OCR_TIMEOUT_MS);
 
-    if (!rawText || rawText.trim().length < MIN_TEXT_LENGTH) {
+    if (ocrResult.status !== "ok") {
+      const status = ocrResult.status === "no_text" ? "missing" : "uncertain";
+      console.log("[Sentinel][Story OCR]", {
+        latencyMs: ocrResult.latencyMs,
+        ocrConfidence: ocrResult.confidence ?? null,
+        status: ocrResult.status,
+        strategy: ocrResult.strategy,
+        textScoringRan: false,
+      });
+      return this.result(
+        50,
+        0,
+        false,
+        performance.now() - t0,
+        status
+      );
+    }
+
+    let rawText: string | null = ocrResult.text;
+    try {
+      const result = await this.analyseProvidedText(rawText);
+      const finalResult = {
+        ...result,
+        inferenceTimeMs: performance.now() - t0,
+        status: "ok" as const,
+      };
+
+      console.log("[Sentinel][Story OCR]", {
+        latencyMs: ocrResult.latencyMs,
+        ocrConfidence: ocrResult.confidence ?? null,
+        status: ocrResult.status,
+        strategy: ocrResult.strategy,
+        textScoringRan: true,
+      });
+
+      return finalResult;
+    } finally {
       rawText = releaseString(rawText);
-      return this.result(50, 0, false, performance.now() - t0);
+    }
+  }
+
+  private async analyseProvidedText(rawText: string): Promise<ModalityResult> {
+    const t0 = performance.now();
+    const normalizedText = rawText.trim();
+    if (!normalizedText) {
+      return this.result(50, 0, false, performance.now() - t0, "missing");
     }
 
     // ── Fast-path keyword pre-filter ─────────────────────────────────────
-    const keywordScore = analyseText(rawText);
-    const keywordConfidence = this.keywordConfidence(rawText, keywordScore);
+    const keywordScore = analyseText(normalizedText);
+    const keywordConfidence = this.keywordConfidence(normalizedText, keywordScore);
+
+    if (normalizedText.length < MIN_TEXT_LENGTH) {
+      return this.result(
+        keywordScore,
+        keywordConfidence,
+        true,
+        performance.now() - t0,
+        "ok"
+      );
+    }
 
     if (keywordScore > PREFILTER_HIGH || keywordScore < PREFILTER_LOW) {
-      // Strong keyword signal — skip the ~50ms model inference
-      rawText = releaseString(rawText);
-      return this.result(keywordScore, keywordConfidence, true, performance.now() - t0);
+      return this.result(
+        keywordScore,
+        keywordConfidence,
+        true,
+        performance.now() - t0,
+        "ok"
+      );
     }
 
     // ── Urgency detection ────────────────────────────────────────────────
-    const hasUrgency = hasUrgencySignal(rawText);
+    const hasUrgency = hasUrgencySignal(normalizedText);
 
     // ── ML semantic scoring ──────────────────────────────────────────────
     const embedder = await this.loadEmbedder();
 
     if (!embedder) {
-      // Model unavailable — fall through to keyword result
-      rawText = releaseString(rawText);
-      return this.result(keywordScore, keywordConfidence * 0.8, true, performance.now() - t0);
+      return this.result(
+        keywordScore,
+        keywordConfidence * 0.8,
+        true,
+        performance.now() - t0,
+        "ok"
+      );
     }
 
     try {
       const phraseEmbeds = await this.getPhraseEmbeddings(embedder);
       if (!phraseEmbeds) {
-        rawText = releaseString(rawText);
-        return this.result(keywordScore, keywordConfidence, true, performance.now() - t0);
+        return this.result(
+          keywordScore,
+          keywordConfidence,
+          true,
+          performance.now() - t0,
+          "ok"
+        );
       }
 
-      const textEmbedOutput = await embedder([rawText], {
+      const textEmbedOutput = await embedder([normalizedText], {
         pooling: "mean",
         normalize: true,
       });
       const textEmbed = textEmbedOutput[0]?.data ?? null;
 
-      rawText = releaseString(rawText); // Release immediately after inference
-
       if (!textEmbed) {
-        return this.result(keywordScore, keywordConfidence, true, performance.now() - t0);
+        return this.result(
+          keywordScore,
+          keywordConfidence,
+          true,
+          performance.now() - t0,
+          "ok"
+        );
       }
 
       // Max cosine similarity to any distress phrase
@@ -126,10 +212,15 @@ export class SemanticTextAnalyser implements Analyser {
       // Confidence: driven by similarity strength
       const confidence = similarityToConfidence(maxSimilarity);
 
-      return this.result(finalScore, confidence, true, performance.now() - t0);
+      return this.result(finalScore, confidence, true, performance.now() - t0, "ok");
     } catch {
-      rawText = releaseString(rawText);
-      return this.result(keywordScore, keywordConfidence, true, performance.now() - t0);
+      return this.result(
+        keywordScore,
+        keywordConfidence,
+        true,
+        performance.now() - t0,
+        "ok"
+      );
     }
   }
 
@@ -248,9 +339,17 @@ export class SemanticTextAnalyser implements Analyser {
     score: number,
     confidence: number,
     available: boolean,
-    inferenceTimeMs: number
+    inferenceTimeMs: number,
+    status?: ModalityResult["status"]
   ): ModalityResult {
-    return { modality: "text", score, confidence, available, inferenceTimeMs };
+    return {
+      modality: "text",
+      score,
+      confidence,
+      available,
+      inferenceTimeMs,
+      status,
+    };
   }
 
   dispose(): void {

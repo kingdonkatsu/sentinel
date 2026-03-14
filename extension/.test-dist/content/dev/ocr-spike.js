@@ -1,18 +1,13 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.DevOcrSpike = void 0;
-const tesseract_js_1 = require("tesseract.js");
 const image_analyser_1 = require("../image-analyser");
+const story_ocr_1 = require("../ocr/story-ocr");
 const OCR_TRIGGER_EVENT = "sentinel:ocr-spike";
-const OCR_TIMEOUT_MS = 3000;
-const OCR_MAX_WIDTH = 1080;
-const OCR_MAX_HEIGHT = 1920;
 const LOG_PREFIX = "[Sentinel][OCR Spike]";
 class DevOcrSpike {
     getViewer;
     overlay = new OcrSpikeOverlay();
-    worker = null;
-    workerPromise = null;
     isRunning = false;
     lastProgress = "idle";
     constructor(options) {
@@ -25,7 +20,6 @@ class DevOcrSpike {
     stop() {
         document.removeEventListener("keydown", this.onKeyDown, true);
         document.removeEventListener(OCR_TRIGGER_EVENT, this.onCustomTrigger);
-        void this.resetWorker();
         this.overlay.dismiss();
     }
     onKeyDown = (event) => {
@@ -67,62 +61,27 @@ class DevOcrSpike {
             this.overlay.render({
                 state: "running",
                 title: "OCR spike running",
-                detail: "Capturing story media",
+                detail: "Inspecting story media",
             });
-            const canvas = await (0, image_analyser_1.captureMediaCanvas)(media, {
-                maxWidth: OCR_MAX_WIDTH,
-                maxHeight: OCR_MAX_HEIGHT,
-            });
-            if (!canvas) {
-                throw new Error("Story capture failed");
-            }
-            const sourceDimensions = media instanceof HTMLImageElement
-                ? `${media.naturalWidth}x${media.naturalHeight}`
-                : `${media.videoWidth}x${media.videoHeight}`;
-            const captureDimensions = `${canvas.width}x${canvas.height}`;
             this.overlay.render({
                 state: "running",
                 title: "OCR spike running",
-                detail: `Running OCR on ${captureDimensions}`,
+                detail: `Running shared OCR on ${media instanceof HTMLImageElement ? "image" : "video"} media`,
             });
-            const worker = await this.getWorker();
-            const result = await this.recognizeWithTimeout(worker, canvas, OCR_TIMEOUT_MS);
-            const latencyMs = Math.round(performance.now() - startedAt);
-            const summary = this.summarize(result);
+            this.lastProgress = "running OCR";
             const mediaType = media instanceof HTMLImageElement ? "image" : "video";
-            console.groupCollapsed(`${LOG_PREFIX} ${summary.text ? "result" : "empty"} (${latencyMs}ms)`);
-            console.log("trigger", trigger);
-            console.log("capture", {
-                mediaType,
-                sourceDimensions,
-                captureDimensions,
-            });
-            console.log("ocr", {
-                latencyMs,
-                confidence: summary.confidence,
-                totalWordCount: summary.totalWordCount,
-                confidentWordCount: summary.confidentWordCount,
-                text: summary.text || "(empty)",
-            });
-            console.groupEnd();
-            this.overlay.render({
-                state: summary.text ? "success" : "empty",
-                title: summary.text ? "OCR spike result" : "OCR spike empty",
-                detail: `${mediaType} ${captureDimensions}`,
-                latencyMs,
-                confidence: summary.confidence,
-                text: summary.text || "(empty)",
-            });
+            const result = await story_ocr_1.storyOcr.recognizeViewer(viewer, story_ocr_1.OCR_DEFAULT_TIMEOUT_MS);
+            const latencyMs = Math.round(performance.now() - startedAt);
+            renderResultLog(trigger, mediaType, result, latencyMs);
+            this.overlay.render(buildOverlayPayload(mediaType, result, latencyMs));
         }
         catch (error) {
             const latencyMs = Math.round(performance.now() - startedAt);
-            const message = error instanceof Error ? error.message : "OCR spike failed unexpectedly";
-            if (/timeout/i.test(message)) {
-                await this.resetWorker();
-            }
+            const message = normalizeError(error);
             console.warn(`${LOG_PREFIX} failed`, {
                 latencyMs,
                 error: message,
+                rawError: error,
             });
             this.overlay.render({
                 state: "error",
@@ -134,91 +93,6 @@ class DevOcrSpike {
         finally {
             this.isRunning = false;
         }
-    }
-    async getWorker() {
-        if (this.worker) {
-            return this.worker;
-        }
-        if (this.workerPromise) {
-            return this.workerPromise;
-        }
-        this.workerPromise = (0, tesseract_js_1.createWorker)("eng", tesseract_js_1.OEM.LSTM_ONLY, {
-            cacheMethod: "none",
-            corePath: chrome.runtime.getURL("models/tesseract"),
-            langPath: chrome.runtime.getURL("models/tesseract/lang-data/4.0.0_best_int"),
-            logger: (message) => {
-                const progressPercent = Math.round((message.progress ?? 0) * 100);
-                this.lastProgress = `${message.status} (${progressPercent}%)`;
-                if (this.isRunning) {
-                    this.overlay.render({
-                        state: "running",
-                        title: "OCR spike running",
-                        detail: this.lastProgress,
-                    });
-                }
-            },
-            workerBlobURL: false,
-            workerPath: chrome.runtime.getURL("models/tesseract/worker.min.js"),
-        })
-            .then(async (worker) => {
-            await worker.setParameters({
-                preserve_interword_spaces: "1",
-                tessedit_pageseg_mode: tesseract_js_1.PSM.SPARSE_TEXT,
-                user_defined_dpi: "150",
-            });
-            this.worker = worker;
-            this.lastProgress = "ready";
-            return worker;
-        })
-            .catch(async (error) => {
-            this.workerPromise = null;
-            if (this.worker) {
-                await this.resetWorker();
-            }
-            throw error;
-        });
-        return this.workerPromise;
-    }
-    async resetWorker() {
-        const worker = this.worker;
-        this.worker = null;
-        this.workerPromise = null;
-        this.lastProgress = "idle";
-        if (worker) {
-            try {
-                await worker.terminate();
-            }
-            catch {
-                // Ignore worker shutdown failures in the spike path.
-            }
-        }
-    }
-    recognizeWithTimeout(worker, image, timeoutMs) {
-        const recognizePromise = worker.recognize(image, {}, {
-            blocks: true,
-            text: true,
-        });
-        return Promise.race([
-            recognizePromise,
-            new Promise((_, reject) => {
-                window.setTimeout(() => {
-                    reject(new Error(`OCR timed out after ${timeoutMs}ms`));
-                }, timeoutMs);
-            }),
-        ]);
-    }
-    summarize(result) {
-        const text = normalizeWhitespace(result.data.text ?? "");
-        const words = Array.isArray(result.data.words) ? result.data.words : [];
-        const confidentWordCount = words.filter((word) => word.confidence >= 60).length;
-        return {
-            confidence: typeof result.data.confidence === "number"
-                ? Math.round(result.data.confidence * 10) / 10
-                : null,
-            confidentWordCount,
-            text,
-            totalWordCount: words.length,
-        };
     }
 }
 exports.DevOcrSpike = DevOcrSpike;
@@ -370,6 +244,73 @@ class OcrSpikeOverlay {
 function normalizeWhitespace(value) {
     return value.replace(/\s+/g, " ").trim();
 }
+function renderResultLog(trigger, mediaType, result, latencyMs) {
+    const sourceDimensions = typeof result.sourceWidth === "number" && typeof result.sourceHeight === "number"
+        ? `${result.sourceWidth}x${result.sourceHeight}`
+        : "n/a";
+    const captureDimensions = typeof result.captureWidth === "number" && typeof result.captureHeight === "number"
+        ? `${result.captureWidth}x${result.captureHeight}`
+        : "n/a";
+    if (result.status === "error" || result.status === "timeout") {
+        console.warn(`${LOG_PREFIX} failed`, {
+            latencyMs,
+            error: result.error || result.status,
+            ocrStatus: result.status,
+            strategy: result.strategy,
+        });
+        return;
+    }
+    console.groupCollapsed(`${LOG_PREFIX} ${result.status === "ok" ? "result" : "empty"} (${latencyMs}ms)`);
+    console.log("trigger", trigger);
+    console.log("capture", {
+        mediaType,
+        sourceDimensions,
+        captureDimensions,
+    });
+    console.log("ocr", {
+        latencyMs,
+        status: result.status,
+        confidence: result.confidence ?? null,
+        totalWordCount: result.totalWordCount ?? null,
+        confidentWordCount: result.confidentWordCount ?? null,
+        strategy: result.strategy,
+        text: result.status === "ok" ? result.text : "(empty)",
+    });
+    console.groupEnd();
+}
+function buildOverlayPayload(mediaType, result, latencyMs) {
+    const captureDimensions = typeof result.captureWidth === "number" && typeof result.captureHeight === "number"
+        ? `${result.captureWidth}x${result.captureHeight}`
+        : "n/a";
+    if (result.status === "ok") {
+        return {
+            state: "success",
+            title: "OCR spike result",
+            detail: `${mediaType} ${captureDimensions} via ${result.strategy ?? "ocr"}`,
+            latencyMs,
+            confidence: result.confidence ?? null,
+            text: result.text,
+        };
+    }
+    if (result.status === "no_text") {
+        return {
+            state: "empty",
+            title: "OCR spike empty",
+            detail: `${mediaType} ${captureDimensions} via ${result.strategy ?? "ocr"}`,
+            latencyMs,
+            confidence: result.confidence ?? null,
+            text: "(empty)",
+        };
+    }
+    return {
+        state: "error",
+        title: result.status === "timeout" ? "OCR spike timeout" : "OCR spike failed",
+        detail: result.error || result.status,
+        latencyMs,
+        confidence: result.confidence ?? null,
+        text: "",
+    };
+}
 function escapeHtml(value) {
     return value
         .replace(/&/g, "&amp;")
@@ -401,5 +342,25 @@ function paletteForState(state) {
                 accent: "#a78bfa",
                 background: "linear-gradient(160deg, rgba(49, 46, 129, 0.96), rgba(15, 23, 42, 0.96))",
             };
+    }
+}
+function normalizeError(error) {
+    if (error instanceof Error && error.message) {
+        return error.message;
+    }
+    if (typeof error === "string" && error.trim()) {
+        return error;
+    }
+    if (error &&
+        typeof error === "object" &&
+        "message" in error &&
+        typeof error.message === "string") {
+        return error.message;
+    }
+    try {
+        return JSON.stringify(error);
+    }
+    catch {
+        return "OCR spike failed unexpectedly";
     }
 }
