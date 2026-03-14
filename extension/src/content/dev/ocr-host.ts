@@ -20,6 +20,7 @@ interface DecodedCanvas {
 interface OcrCandidate {
   canvas: HTMLCanvasElement;
   label: string;
+  metrics: CandidateMetrics;
   psm: PSM;
 }
 
@@ -30,6 +31,15 @@ interface CandidateSummary {
   strategy: string;
   text: string;
   totalWordCount: number;
+}
+
+interface CandidateMetrics {
+  darkPixelRatio: number;
+  horizontalTransitionRatio: number;
+  occupiedColumnRatio: number;
+  occupiedRowRatio: number;
+  textLikelihood: number;
+  verticalTransitionRatio: number;
 }
 
 let worker: OcrWorker | null = null;
@@ -192,9 +202,27 @@ async function runBestEffortOcr(
   timeoutMs: number
 ): Promise<CandidateSummary> {
   const startedAt = performance.now();
-  const candidates = buildOcrCandidates(sourceCanvas);
+  const candidates = buildOcrCandidates(sourceCanvas)
+    .filter((candidate) => candidate.metrics.textLikelihood >= 12)
+    .sort(
+      (left, right) => right.metrics.textLikelihood - left.metrics.textLikelihood
+    )
+    .slice(0, 2);
+  const strongestCandidate = candidates[0] ?? null;
   let best: CandidateSummary | null = null;
   let bestRaw: CandidateSummary | null = null;
+  let timedOutCandidates = 0;
+
+  if (candidates.length === 0) {
+    return {
+      confidence: null,
+      confidentWordCount: 0,
+      qualityScore: 0,
+      strategy: "no-text-short-circuit",
+      text: "",
+      totalWordCount: 0,
+    };
+  }
 
   for (const candidate of candidates) {
     const elapsedMs = performance.now() - startedAt;
@@ -203,15 +231,27 @@ async function runBestEffortOcr(
       break;
     }
 
+    const candidateTimeoutMs = Math.max(350, Math.min(remainingMs, 1100));
+
     await ocrWorker.setParameters({
       tessedit_pageseg_mode: candidate.psm,
     });
 
-    const recognition = await recognizeWithTimeout(
-      ocrWorker,
-      candidate.canvas,
-      remainingMs
-    );
+    let recognition: RecognizeResult;
+    try {
+      recognition = await recognizeWithTimeout(
+        ocrWorker,
+        candidate.canvas,
+        candidateTimeoutMs
+      );
+    } catch (error) {
+      if (/timed out/i.test(normalizeError(error))) {
+        timedOutCandidates += 1;
+        continue;
+      }
+
+      throw error;
+    }
     const summary = summarizeCandidate(recognition, candidate.label);
 
     if (!bestRaw || summary.qualityScore > bestRaw.qualityScore) {
@@ -232,6 +272,17 @@ async function runBestEffortOcr(
 
   const winner = best ?? bestRaw;
   if (!winner) {
+    if (timedOutCandidates > 0 && (strongestCandidate?.metrics.textLikelihood ?? 0) < 55) {
+      return {
+        confidence: null,
+        confidentWordCount: 0,
+        qualityScore: 0,
+        strategy: "no-text-timeout",
+        text: "",
+        totalWordCount: 0,
+      };
+    }
+
     throw new Error("OCR returned no candidate result");
   }
 
@@ -406,16 +457,15 @@ function makeCandidate(
     canvas.height
   );
 
-  applyBinaryPreprocessing(canvas);
-
   return {
     canvas,
     label: config.label,
+    metrics: applyBinaryPreprocessing(canvas),
     psm: config.psm,
   };
 }
 
-function applyBinaryPreprocessing(canvas: HTMLCanvasElement): void {
+function applyBinaryPreprocessing(canvas: HTMLCanvasElement): CandidateMetrics {
   const ctx = canvas.getContext("2d");
   if (!ctx) {
     throw new Error("Failed to access OCR candidate context");
@@ -459,6 +509,101 @@ function applyBinaryPreprocessing(canvas: HTMLCanvasElement): void {
   }
 
   ctx.putImageData(imageData, 0, 0);
+  return analyzeBinaryImageData(imageData, canvas.width, canvas.height);
+}
+
+function analyzeBinaryImageData(
+  imageData: ImageData,
+  width: number,
+  height: number
+): CandidateMetrics {
+  const { data } = imageData;
+  const totalPixels = Math.max(1, width * height);
+  const rowHasDark = new Uint8Array(height);
+  const columnHasDark = new Uint8Array(width);
+  let darkPixels = 0;
+  let horizontalTransitions = 0;
+  let verticalTransitions = 0;
+
+  for (let y = 0; y < height; y += 1) {
+    for (let x = 0; x < width; x += 1) {
+      const pixelIndex = (y * width + x) * 4;
+      const value = data[pixelIndex];
+      const isDark = value === 0;
+
+      if (isDark) {
+        darkPixels += 1;
+        rowHasDark[y] = 1;
+        columnHasDark[x] = 1;
+      }
+
+      if (x > 0 && value !== data[pixelIndex - 4]) {
+        horizontalTransitions += 1;
+      }
+      if (y > 0 && value !== data[pixelIndex - width * 4]) {
+        verticalTransitions += 1;
+      }
+    }
+  }
+
+  const occupiedRowRatio =
+    rowHasDark.reduce((count, value) => count + value, 0) / Math.max(1, height);
+  const occupiedColumnRatio =
+    columnHasDark.reduce((count, value) => count + value, 0) / Math.max(1, width);
+  const darkPixelRatio = darkPixels / totalPixels;
+  const horizontalTransitionRatio =
+    horizontalTransitions / Math.max(1, height * (width - 1));
+  const verticalTransitionRatio =
+    verticalTransitions / Math.max(1, width * (height - 1));
+
+  return {
+    darkPixelRatio,
+    horizontalTransitionRatio,
+    occupiedColumnRatio,
+    occupiedRowRatio,
+    textLikelihood: computeTextLikelihood({
+      darkPixelRatio,
+      horizontalTransitionRatio,
+      occupiedColumnRatio,
+      occupiedRowRatio,
+      textLikelihood: 0,
+      verticalTransitionRatio,
+    }),
+    verticalTransitionRatio,
+  };
+}
+
+function computeTextLikelihood(metrics: CandidateMetrics): number {
+  const transitionDensity =
+    metrics.horizontalTransitionRatio + metrics.verticalTransitionRatio;
+
+  if (metrics.darkPixelRatio < 0.004 || metrics.darkPixelRatio > 0.92) {
+    return 0;
+  }
+
+  if (
+    transitionDensity < 0.01 &&
+    metrics.occupiedRowRatio < 0.12 &&
+    metrics.occupiedColumnRatio < 0.12
+  ) {
+    return 0;
+  }
+
+  const inkScore =
+    metrics.darkPixelRatio < 0.015
+      ? 8
+      : metrics.darkPixelRatio < 0.4
+        ? 24
+        : 12;
+  const transitionScore = Math.min(55, Math.round(transitionDensity * 1200));
+  const coverageScore = Math.min(
+    35,
+    Math.round(
+      metrics.occupiedRowRatio * 16 + metrics.occupiedColumnRatio * 18
+    )
+  );
+
+  return inkScore + transitionScore + coverageScore;
 }
 
 function computeOtsuThreshold(
@@ -511,28 +656,46 @@ function summarizeCandidate(
   const rawText = normalizeWhitespace(result.data.text ?? "");
   const words = Array.isArray(result.data.words) ? result.data.words : [];
   const confidentWords = words
-    .filter((word) => word.confidence >= 55)
+    .filter((word) => word.confidence >= 60)
     .map((word) => normalizeWhitespace(word.text ?? ""))
     .filter((word) => /[A-Za-z0-9]/.test(word));
   const filteredText = normalizeWhitespace(confidentWords.join(" "));
+  const filteredTokens = tokenizeOcrText(filteredText);
+  const plausibleTokens = filteredTokens.filter(isPlausibleOcrToken);
+  const plausibleTokenCount = plausibleTokens.length;
+  const shortTokenCount = filteredTokens.filter((token) => token.length <= 1).length;
   const confidence =
     typeof result.data.confidence === "number"
       ? Math.round(result.data.confidence * 10) / 10
       : null;
-  const text =
+  const candidateText =
     filteredText.length > 0
       ? filteredText
-      : (confidence ?? 0) >= 70
+      : (confidence ?? 0) >= 72
         ? rawText
         : "";
+  const text = shouldAcceptCandidateText({
+    confidence,
+    filteredTokenCount: filteredTokens.length,
+    hasLongPlausibleToken: plausibleTokens.some((token) => token.length >= 4),
+    plausibleTokenCount,
+    shortTokenCount,
+    text: candidateText,
+    totalWordCount: words.length,
+  })
+    ? candidateText
+    : "";
 
   return {
     confidence,
-    confidentWordCount: confidentWords.length,
+    confidentWordCount: plausibleTokenCount,
     qualityScore: computeQualityScore(
-      text || rawText,
+      text || candidateText || rawText,
       confidence,
-      confidentWords.length
+      plausibleTokenCount,
+      filteredTokens.length,
+      shortTokenCount,
+      words.length
     ),
     strategy,
     text,
@@ -543,7 +706,10 @@ function summarizeCandidate(
 function computeQualityScore(
   text: string,
   confidence: number | null,
-  confidentWordCount: number
+  plausibleTokenCount: number,
+  filteredTokenCount: number,
+  shortTokenCount: number,
+  totalWordCount: number
 ): number {
   const normalized = normalizeWhitespace(text);
   if (!normalized) {
@@ -553,12 +719,18 @@ function computeQualityScore(
   const allowedChars = normalized.replace(/[A-Za-z0-9\s.,!?'"():;%&/+_-]/g, "");
   const weirdCharPenalty =
     normalized.length > 0 ? (allowedChars.length / normalized.length) * 80 : 0;
+  const shortTokenPenalty =
+    filteredTokenCount > 0 ? (shortTokenCount / filteredTokenCount) * 50 : 0;
+  const sparseSignalPenalty =
+    totalWordCount > plausibleTokenCount * 3 + 6 ? 25 : 0;
   const score =
     (confidence ?? 0) +
-    confidentWordCount * 14 +
+    plausibleTokenCount * 16 +
     normalized.length * 0.6 +
     (/\s/.test(normalized) ? 10 : 0) -
-    weirdCharPenalty;
+    weirdCharPenalty -
+    shortTokenPenalty -
+    sparseSignalPenalty;
 
   return Math.max(0, Math.round(score));
 }
@@ -567,6 +739,85 @@ function scoreUsefulText(summary: CandidateSummary): number {
   return summary.text
     ? summary.qualityScore + summary.confidentWordCount * 10
     : summary.qualityScore;
+}
+
+function tokenizeOcrText(text: string): string[] {
+  return normalizeWhitespace(text)
+    .split(/\s+/)
+    .map((token) =>
+      token.replace(/^[^A-Za-z0-9]+|[^A-Za-z0-9]+$/g, "")
+    )
+    .filter(Boolean);
+}
+
+function isPlausibleOcrToken(token: string): boolean {
+  if (/^\d+$/.test(token)) {
+    return token.length >= 2;
+  }
+
+  const lower = token.toLowerCase();
+  if (lower.length >= 4) {
+    return true;
+  }
+
+  if (lower.length === 3) {
+    return /[aeiouy]/.test(lower);
+  }
+
+  if (lower.length === 2) {
+    return /^[a-z]{2}$/.test(lower) && /[aeiou]/.test(lower);
+  }
+
+  return false;
+}
+
+function shouldAcceptCandidateText(params: {
+  confidence: number | null;
+  filteredTokenCount: number;
+  hasLongPlausibleToken: boolean;
+  plausibleTokenCount: number;
+  shortTokenCount: number;
+  text: string;
+  totalWordCount: number;
+}): boolean {
+  if (!params.text) {
+    return false;
+  }
+
+  if (params.plausibleTokenCount === 0) {
+    return false;
+  }
+
+  const shortTokenRatio =
+    params.filteredTokenCount > 0
+      ? params.shortTokenCount / params.filteredTokenCount
+      : 1;
+  const confidence = params.confidence ?? 0;
+  const sparseSignal =
+    params.totalWordCount > params.plausibleTokenCount * 3 + 6;
+
+  if (confidence >= 72 && shortTokenRatio < 0.5 && !sparseSignal) {
+    return true;
+  }
+
+  if (
+    params.plausibleTokenCount >= 2 &&
+    (params.hasLongPlausibleToken || confidence >= 65) &&
+    shortTokenRatio < 0.45 &&
+    !sparseSignal
+  ) {
+    return true;
+  }
+
+  if (
+    params.plausibleTokenCount >= 3 &&
+    confidence >= 48 &&
+    shortTokenRatio < 0.34
+  ) {
+    return true;
+  }
+
+  return false;
 }
 
 function waitForEvent(
