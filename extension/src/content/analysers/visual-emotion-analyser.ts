@@ -24,6 +24,11 @@ import {
   findPrimaryStoryMedia,
   type ImageHeuristicBreakdown,
 } from "../image-analyser";
+import {
+  applyVisualContextCues,
+  extractVisualContextCues,
+  type VisualContextCues,
+} from "./visual-context-cues";
 import { zeroImageData, destroyCanvas } from "../privacy/secure-cleanup";
 import type * as FaceApiType from "@vladmandic/face-api";
 
@@ -78,6 +83,14 @@ export interface CapturedFrameScore {
   faceCount?: number;
   mlScore?: number;
   heuristic: ImageHeuristicBreakdown;
+  contextCueScore: number;
+  contextReasons: string[];
+  contextFlags: {
+    bloodLike: boolean;
+    pillLike: boolean;
+    medicalSettingLike: boolean;
+    injuryChaosLike: boolean;
+  };
 }
 
 export class VisualEmotionAnalyser implements Analyser {
@@ -114,6 +127,7 @@ export class VisualEmotionAnalyser implements Analyser {
       const normalizedFrame = this.normalizeToModelFrame(imageData, canvas);
       const heuristic = analyseImageDetailed(normalizedFrame);
       const heuristicScore = heuristic.score;
+      const contextCues = extractVisualContextCues(normalizedFrame);
 
       // Attempt ML-based scoring
       const mlResult = await this.scoreWithFaceApi(normalizedFrame, canvas);
@@ -126,23 +140,47 @@ export class VisualEmotionAnalyser implements Analyser {
           Math.abs(mlResult.score - heuristicScore) >= 30
             ? Math.max(0.55, mlResult.confidence - 0.1)
             : mlResult.confidence;
+        const adjusted = applyVisualContextCues(
+          blendedScore,
+          blendedConfidence,
+          contextCues
+        );
+        this.logVisualContext(contextCues, blendedScore, adjusted.score);
 
         return {
-          score: blendedScore,
-          confidence: blendedConfidence,
+          score: adjusted.score,
+          confidence: adjusted.confidence,
           strategy: "face-blend",
           faceCount: mlResult.faceCount,
           mlScore: mlResult.score,
           heuristic,
+          contextCueScore: contextCues.cueScore,
+          contextReasons: contextCues.reasons,
+          contextFlags: {
+            bloodLike: contextCues.bloodLike,
+            pillLike: contextCues.pillLike,
+            medicalSettingLike: contextCues.medicalSettingLike,
+            injuryChaosLike: contextCues.injuryChaosLike,
+          },
         };
       }
 
       // Fallback: colour histogram heuristic
+      const adjusted = applyVisualContextCues(heuristicScore, 0.3, contextCues);
+      this.logVisualContext(contextCues, heuristicScore, adjusted.score);
       return {
-        score: heuristicScore,
-        confidence: 0.3,
+        score: adjusted.score,
+        confidence: adjusted.confidence,
         strategy: "heuristic",
         heuristic,
+        contextCueScore: contextCues.cueScore,
+        contextReasons: contextCues.reasons,
+        contextFlags: {
+          bloodLike: contextCues.bloodLike,
+          pillLike: contextCues.pillLike,
+          medicalSettingLike: contextCues.medicalSettingLike,
+          injuryChaosLike: contextCues.injuryChaosLike,
+        },
       };
     } finally {
       zeroImageData(imageData);
@@ -243,6 +281,31 @@ export class VisualEmotionAnalyser implements Analyser {
       available: false,
       inferenceTimeMs,
     };
+  }
+
+  private logVisualContext(
+    cues: VisualContextCues,
+    baseScore: number,
+    adjustedScore: number
+  ): void {
+    if (cues.reasons.length === 0) {
+      return;
+    }
+
+    console.log("[Sentinel][Visual Context]", {
+      reasons: cues.reasons,
+      cueScore: cues.cueScore,
+      flags: {
+        bloodLike: cues.bloodLike,
+        pillLike: cues.pillLike,
+        medicalSettingLike: cues.medicalSettingLike,
+        injuryChaosLike: cues.injuryChaosLike,
+      },
+      scoreBoost: cues.scoreBoost,
+      confidenceBoost: cues.confidenceBoost,
+      baseScore,
+      adjustedScore,
+    });
   }
 
   dispose(): void {

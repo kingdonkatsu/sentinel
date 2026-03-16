@@ -67,6 +67,14 @@ class OcrSpike {
           faceCount?: number;
           heuristicTone?: number;
           heuristicScene?: number;
+          contextCueScore?: number;
+          contextReasons?: string[];
+          contextFlags?: {
+            bloodLike: boolean;
+            pillLike: boolean;
+            medicalSettingLike: boolean;
+            injuryChaosLike: boolean;
+          };
         }
       | null = null;
     this.renderOverlay("running", "Running OCR spike...");
@@ -141,6 +149,9 @@ class OcrSpike {
         imageModelMlScore: imageModel.mlScore,
         heuristicTone: imageModel.heuristicTone,
         heuristicScene: imageModel.heuristicScene,
+        contextCueScore: imageModel.contextCueScore,
+        contextReasons: imageModel.contextReasons,
+        contextFlags: imageModel.contextFlags,
         text,
         confidence,
         wordCount,
@@ -152,6 +163,12 @@ class OcrSpike {
           `OCR spike complete (${totalLatency}ms)`,
           `Image model score: ${imageModel.score} (${imageModelConfidenceText})`,
           `Image model adjusted score: ${imageModelAdjustedScore}`,
+          typeof imageModel.contextCueScore === "number"
+            ? `Image context cue score: ${imageModel.contextCueScore}`
+            : "",
+          imageModel.contextReasons && imageModel.contextReasons.length > 0
+            ? `Image context cues: ${imageModel.contextReasons.join(", ")}`
+            : "",
           `Image model path: ${imageModelStrategy}`,
           `Image model source: ${imageModelSourceLabel}`,
           typeof imageModel.heuristicTone === "number" &&
@@ -185,6 +202,12 @@ class OcrSpike {
                 imageModel.score,
                 imageModel.confidence
               )}`
+            : "",
+          imageModel && typeof imageModel.contextCueScore === "number"
+            ? `Image context cue score: ${imageModel.contextCueScore}`
+            : "",
+          imageModel && imageModel.contextReasons && imageModel.contextReasons.length > 0
+            ? `Image context cues: ${imageModel.contextReasons.join(", ")}`
             : "",
           imageModel ? `Image model path: ${imageModel.strategy}` : "",
           imageModel ? `Image model source: ${imageModel.source}` : "",
@@ -532,6 +555,14 @@ class OcrSpike {
     faceCount?: number;
     heuristicTone?: number;
     heuristicScene?: number;
+    contextCueScore?: number;
+    contextReasons?: string[];
+    contextFlags?: {
+      bloodLike: boolean;
+      pillLike: boolean;
+      medicalSettingLike: boolean;
+      injuryChaosLike: boolean;
+    };
   } | null> {
     if (!viewer) {
       return null;
@@ -552,6 +583,9 @@ class OcrSpike {
         faceCount: result.faceCount,
         heuristicTone: result.heuristic.toneScore,
         heuristicScene: result.heuristic.sceneCueScore,
+        contextCueScore: result.contextCueScore,
+        contextReasons: result.contextReasons,
+        contextFlags: result.contextFlags,
       });
       return {
         score: result.score,
@@ -562,6 +596,9 @@ class OcrSpike {
         faceCount: result.faceCount,
         heuristicTone: result.heuristic.toneScore,
         heuristicScene: result.heuristic.sceneCueScore,
+        contextCueScore: result.contextCueScore,
+        contextReasons: result.contextReasons,
+        contextFlags: result.contextFlags,
       };
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
@@ -581,6 +618,14 @@ class OcrSpike {
     faceCount?: number;
     heuristicTone?: number;
     heuristicScene?: number;
+    contextCueScore?: number;
+    contextReasons?: string[];
+    contextFlags?: {
+      bloodLike: boolean;
+      pillLike: boolean;
+      medicalSettingLike: boolean;
+      injuryChaosLike: boolean;
+    };
   }> {
     try {
       const cloned = cloneImageData(capture);
@@ -593,6 +638,9 @@ class OcrSpike {
         faceCount: result.faceCount,
         heuristicTone: result.heuristic.toneScore,
         heuristicScene: result.heuristic.sceneCueScore,
+        contextCueScore: result.contextCueScore,
+        contextReasons: result.contextReasons,
+        contextFlags: result.contextFlags,
       });
       return {
         score: result.score,
@@ -603,6 +651,9 @@ class OcrSpike {
         faceCount: result.faceCount,
         heuristicTone: result.heuristic.toneScore,
         heuristicScene: result.heuristic.sceneCueScore,
+        contextCueScore: result.contextCueScore,
+        contextReasons: result.contextReasons,
+        contextFlags: result.contextFlags,
       };
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);

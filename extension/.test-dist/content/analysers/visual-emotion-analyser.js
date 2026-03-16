@@ -53,6 +53,7 @@ var __importStar = (this && this.__importStar) || (function () {
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.VisualEmotionAnalyser = void 0;
 const image_analyser_1 = require("../image-analyser");
+const visual_context_cues_1 = require("./visual-context-cues");
 const secure_cleanup_1 = require("../privacy/secure-cleanup");
 /**
  * Risk weights for each FER expression class.
@@ -122,6 +123,7 @@ class VisualEmotionAnalyser {
             const normalizedFrame = this.normalizeToModelFrame(imageData, canvas);
             const heuristic = (0, image_analyser_1.analyseImageDetailed)(normalizedFrame);
             const heuristicScore = heuristic.score;
+            const contextCues = (0, visual_context_cues_1.extractVisualContextCues)(normalizedFrame);
             // Attempt ML-based scoring
             const mlResult = await this.scoreWithFaceApi(normalizedFrame, canvas);
             if (mlResult !== null) {
@@ -130,21 +132,41 @@ class VisualEmotionAnalyser {
                 const blendedConfidence = Math.abs(mlResult.score - heuristicScore) >= 30
                     ? Math.max(0.55, mlResult.confidence - 0.1)
                     : mlResult.confidence;
+                const adjusted = (0, visual_context_cues_1.applyVisualContextCues)(blendedScore, blendedConfidence, contextCues);
+                this.logVisualContext(contextCues, blendedScore, adjusted.score);
                 return {
-                    score: blendedScore,
-                    confidence: blendedConfidence,
+                    score: adjusted.score,
+                    confidence: adjusted.confidence,
                     strategy: "face-blend",
                     faceCount: mlResult.faceCount,
                     mlScore: mlResult.score,
                     heuristic,
+                    contextCueScore: contextCues.cueScore,
+                    contextReasons: contextCues.reasons,
+                    contextFlags: {
+                        bloodLike: contextCues.bloodLike,
+                        pillLike: contextCues.pillLike,
+                        medicalSettingLike: contextCues.medicalSettingLike,
+                        injuryChaosLike: contextCues.injuryChaosLike,
+                    },
                 };
             }
             // Fallback: colour histogram heuristic
+            const adjusted = (0, visual_context_cues_1.applyVisualContextCues)(heuristicScore, 0.3, contextCues);
+            this.logVisualContext(contextCues, heuristicScore, adjusted.score);
             return {
-                score: heuristicScore,
-                confidence: 0.3,
+                score: adjusted.score,
+                confidence: adjusted.confidence,
                 strategy: "heuristic",
                 heuristic,
+                contextCueScore: contextCues.cueScore,
+                contextReasons: contextCues.reasons,
+                contextFlags: {
+                    bloodLike: contextCues.bloodLike,
+                    pillLike: contextCues.pillLike,
+                    medicalSettingLike: contextCues.medicalSettingLike,
+                    injuryChaosLike: contextCues.injuryChaosLike,
+                },
             };
         }
         finally {
@@ -228,6 +250,25 @@ class VisualEmotionAnalyser {
             available: false,
             inferenceTimeMs,
         };
+    }
+    logVisualContext(cues, baseScore, adjustedScore) {
+        if (cues.reasons.length === 0) {
+            return;
+        }
+        console.log("[Sentinel][Visual Context]", {
+            reasons: cues.reasons,
+            cueScore: cues.cueScore,
+            flags: {
+                bloodLike: cues.bloodLike,
+                pillLike: cues.pillLike,
+                medicalSettingLike: cues.medicalSettingLike,
+                injuryChaosLike: cues.injuryChaosLike,
+            },
+            scoreBoost: cues.scoreBoost,
+            confidenceBoost: cues.confidenceBoost,
+            baseScore,
+            adjustedScore,
+        });
     }
     dispose() {
         modelsLoaded = false;
