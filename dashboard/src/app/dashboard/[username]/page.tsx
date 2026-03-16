@@ -9,7 +9,13 @@ import { RiskBadge } from "@/components/risk-badge";
 import { ScoreChart } from "@/components/score-chart";
 import { OutreachCard } from "@/components/outreach-card";
 import { NotesPanel } from "@/components/notes-panel";
-import { timeAgo, trendIcon, trendColor } from "@/lib/utils";
+import {
+  timeAgo,
+  trendIcon,
+  trendColor,
+  modalityLabel,
+  orderedModalityEntries,
+} from "@/lib/utils";
 
 export default function AccountDetailPage() {
   const params = useParams();
@@ -40,6 +46,10 @@ export default function AccountDetailPage() {
   function renderScore(score: number | null) {
     return score ?? "\u2014";
   }
+
+  const latestModalityEntries = orderedModalityEntries(
+    account?.latest_modality_scores
+  );
 
   if (isLoading) {
     return (
@@ -143,10 +153,73 @@ export default function AccountDetailPage() {
             <div className="text-xs text-slate-500 mt-1">Image Score</div>
           </div>
         </div>
+
+        <div className="mt-4 pt-4 border-t border-slate-700/50">
+          <div className="text-xs uppercase tracking-wide text-slate-500 mb-2">
+            Latest modality scores
+          </div>
+          {latestModalityEntries.length > 0 ? (
+            <div className="flex flex-wrap gap-2">
+              {latestModalityEntries.map(([modality, score]) => (
+                <div
+                  key={modality}
+                  className="rounded-full border border-slate-600 bg-slate-900/50 px-3 py-1 text-xs text-slate-300"
+                >
+                  {modalityLabel(modality)} {score}
+                </div>
+              ))}
+            </div>
+          ) : (
+            <div className="text-sm text-slate-400">
+              No modality breakdown available yet.
+            </div>
+          )}
+        </div>
       </div>
 
       {/* Score Timeline Chart */}
       <ScoreChart scores={account.scores} />
+
+      <div className="bg-slate-800/50 rounded-xl p-5">
+        <h3 className="text-sm font-semibold text-slate-300 mb-4">
+          Recent Observations
+        </h3>
+        <div className="space-y-3">
+          {account.scores
+            .slice()
+            .reverse()
+            .map((score) => {
+              const modalityEntries = orderedModalityEntries(score.modality_scores);
+              return (
+                <div
+                  key={score.timestamp}
+                  className="rounded-lg border border-slate-700/50 bg-slate-900/30 p-3"
+                >
+                  <div className="flex items-center justify-between gap-4">
+                    <div className="text-sm text-slate-200">
+                      {new Date(score.timestamp).toLocaleString()}
+                    </div>
+                    <div className="text-xs text-slate-400">
+                      Composite {score.composite} · Text {renderScore(score.text_score)} · Image{" "}
+                      {renderScore(score.image_score)}
+                    </div>
+                  </div>
+                  <div className="mt-2 text-xs text-slate-400">
+                    {modalityEntries.length > 0 ? (
+                      modalityEntries.map(([modality, value]) => (
+                        <span key={modality} className="mr-3 inline-block">
+                          {modalityLabel(modality)} {value}
+                        </span>
+                      ))
+                    ) : (
+                      <span>No modality breakdown available.</span>
+                    )}
+                  </div>
+                </div>
+              );
+            })}
+        </div>
+      </div>
 
       {/* AI Outreach Suggestions */}
       <OutreachCard

@@ -80,12 +80,30 @@ export const DISTRESS_PHRASES_SUBTLE = [
   "I've been wearing long sleeves in summer",
 ] as const;
 
+// Tier 6 — Dissociation / metaphorical self-erasure
+// Covers figurative language youth use to express feeling unreal, invisible, or absent.
+// Not explicit suicidality — closer to hopelessness/subtle tier semantically.
+export const DISTRESS_PHRASES_DISSOCIATION = [
+  "I feel like I'm already a ghost",
+  "I feel like I've already disappeared",
+  "I don't feel real anymore",
+  "I'm invisible even when I'm standing right there",
+  "Sometimes I feel like I'm not even here",
+  "I feel like a ghost in my own life",
+  "I feel like I'm fading away and no one notices",
+  "I feel disconnected from everything around me",
+  "I keep disappearing inside myself",
+  "Nobody sees the real me anymore",
+  "I feel like I'm slowly disappearing",
+] as const;
+
 export const ALL_DISTRESS_PHRASES: readonly string[] = [
   ...DISTRESS_PHRASES_SEVERE,
   ...DISTRESS_PHRASES_HIGH,
   ...DISTRESS_PHRASES_MODERATE,
   ...DISTRESS_PHRASES_MILD,
   ...DISTRESS_PHRASES_SUBTLE,
+  ...DISTRESS_PHRASES_DISSOCIATION,
 ];
 
 /**

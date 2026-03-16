@@ -40,3 +40,38 @@ export function trendColor(trend: string): string {
   if (trend === "declining") return "text-green-400";
   return "text-slate-400";
 }
+
+const MODALITY_ORDER = ["text", "visual", "video", "temporal", "metadata"];
+
+export function modalityLabel(modality: string): string {
+  if (modality === "text") return "Text";
+  if (modality === "visual") return "Visual";
+  if (modality === "video") return "Video";
+  if (modality === "temporal") return "Temporal";
+  if (modality === "metadata") return "Metadata";
+  return modality;
+}
+
+export function orderedModalityEntries(
+  modalityScores: Record<string, number> | null | undefined
+): Array<[string, number]> {
+  if (!modalityScores) return [];
+
+  return Object.entries(modalityScores).sort(([left], [right]) => {
+    const leftIndex = MODALITY_ORDER.indexOf(left);
+    const rightIndex = MODALITY_ORDER.indexOf(right);
+    const safeLeft = leftIndex === -1 ? Number.MAX_SAFE_INTEGER : leftIndex;
+    const safeRight = rightIndex === -1 ? Number.MAX_SAFE_INTEGER : rightIndex;
+    return safeLeft - safeRight || left.localeCompare(right);
+  });
+}
+
+export function modalityHint(
+  modalityScores: Record<string, number> | null | undefined,
+  limit = 3
+): string | null {
+  const entries = orderedModalityEntries(modalityScores).slice(0, limit);
+  if (entries.length === 0) return null;
+
+  return entries.map(([modality, score]) => `${modality} ${score}`).join(" \u00b7 ");
+}

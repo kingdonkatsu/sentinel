@@ -211,6 +211,25 @@ test("semantic text analyser uses the semantic scorer for neutral OCR text", asy
   assert.equal(semanticCalls, 1);
   assert.equal(result.available, true);
   assert.equal(result.status, "ok");
-  assert.ok(result.score > 50);
+  assert.ok(result.score > 65, `expected score > 65 for dissociation phrase, got ${result.score}`);
   assert.ok(result.confidence > 0.5);
+});
+
+test("dissociation multi-word patterns score above neutral on keyword path", () => {
+  assert.ok(analyseText("sometimes i feel like a ghost") > 50, "feel like a ghost should score above neutral");
+  assert.ok(analyseText("i don't feel real anymore") > 50, "don't feel real should score above neutral");
+  assert.ok(analyseText("fading away from everyone") > 50, "fading away should score above neutral");
+  assert.ok(analyseText("already a ghost") > 50, "already a ghost should score above neutral");
+});
+
+test("dissociation single-word slang does not trigger false positives on keyword path", () => {
+  assert.equal(analyseText("in ghost mode today"), 50, "ghost mode slang should be neutral");
+  assert.equal(analyseText("invisible ink is a thing"), 50, "invisible ink should be neutral");
+  assert.equal(analyseText("disappeared for a weekend trip"), 50, "disappeared for a weekend should be neutral");
+  assert.equal(analyseText("that song just fades out"), 50, "fades out should be neutral");
+});
+
+test("positive caption stays at or below 55 on keyword path", () => {
+  assert.ok(analyseText("Morning grind. No days off!") <= 55, "positive caption should not score high");
+  assert.ok(analyseText("best day ever so grateful") <= 50, "positive caption should score neutral or below");
 });

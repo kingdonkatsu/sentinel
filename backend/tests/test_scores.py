@@ -133,6 +133,12 @@ def test_dashboard_returns_ingested_account(client: TestClient):
     assert len(data) == 1
     assert data[0]["username"] == "dashboard_user"
     assert data[0]["latest_composite"] == 86
+    assert data[0]["latest_text_score"] == 90
+    assert data[0]["latest_modality_scores"] == {
+        "text": 92,
+        "visual": 75,
+        "temporal": 70,
+    }
     assert data[0]["score_count"] == 1
 
 
@@ -144,6 +150,7 @@ def test_account_detail_returns_score_history(client: TestClient):
         text_score=85,
         image_score=82,
         timestamp=1700000000001,
+        modality_scores={"text": 88, "visual": 46, "temporal": 50},
     )
     submit_score(
         client,
@@ -161,10 +168,17 @@ def test_account_detail_returns_score_history(client: TestClient):
     assert data["username"] == "detail_user"
     assert data["score_count"] == 2
     assert data["max_composite"] == 91
+    assert data["latest_modality_scores"] is None
     assert [score["timestamp"] for score in data["scores"]] == [
         1700000000001,
         1700000000002,
     ]
+    assert data["scores"][0]["modality_scores"] == {
+        "text": 88,
+        "visual": 46,
+        "temporal": 50,
+    }
+    assert data["scores"][1]["modality_scores"] is None
 
 
 def test_account_detail_not_found(client: TestClient):
@@ -196,14 +210,63 @@ def test_dashboard_and_detail_preserve_missing_modality_scores(client: TestClien
     dashboard_entry = dashboard_response.json()[0]
     assert dashboard_entry["latest_text_score"] is None
     assert dashboard_entry["latest_image_score"] is None
+    assert dashboard_entry["latest_modality_scores"] == {
+        "temporal": 63,
+        "metadata": 58,
+    }
 
     detail_response = client.get("/api/v1/dashboard/missing_scores_user")
     assert detail_response.status_code == 200
     detail = detail_response.json()
     assert detail["latest_text_score"] is None
     assert detail["latest_image_score"] is None
+    assert detail["latest_modality_scores"] == {
+        "temporal": 63,
+        "metadata": 58,
+    }
+    assert detail["scores"][0]["modality_scores"] is None
     assert detail["scores"][-1]["text_score"] is None
     assert detail["scores"][-1]["image_score"] is None
+    assert detail["scores"][-1]["modality_scores"] == {
+        "temporal": 63,
+        "metadata": 58,
+    }
+
+
+def test_latest_modality_scores_clear_when_newer_payload_omits_them(client: TestClient):
+    submit_score(
+        client,
+        username="modality_reset_user",
+        composite_score=82,
+        text_score=78,
+        image_score=64,
+        timestamp=1700000000300,
+        modality_scores={"text": 88, "visual": 46, "temporal": 50},
+    )
+    submit_score(
+        client,
+        username="modality_reset_user",
+        composite_score=61,
+        text_score=58,
+        image_score=57,
+        timestamp=1700000000400,
+    )
+
+    dashboard_response = client.get("/api/v1/dashboard")
+    assert dashboard_response.status_code == 200
+    dashboard_entry = dashboard_response.json()[0]
+    assert dashboard_entry["latest_modality_scores"] is None
+
+    detail_response = client.get("/api/v1/dashboard/modality_reset_user")
+    assert detail_response.status_code == 200
+    detail = detail_response.json()
+    assert detail["latest_modality_scores"] is None
+    assert detail["scores"][0]["modality_scores"] == {
+        "text": 88,
+        "visual": 46,
+        "temporal": 50,
+    }
+    assert detail["scores"][1]["modality_scores"] is None
 
 
 def test_confirm_case_and_get_confirmations(client: TestClient):

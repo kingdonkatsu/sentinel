@@ -9,8 +9,8 @@ const ORT_WASM_FILENAMES = [
     "ort-wasm-simd.wasm",
     "ort-wasm-simd-threaded.wasm",
 ];
-const PHRASE_LIST_VERSION = 1;
-const PHRASE_CACHE_KEY = "sentinel_phrase_embeddings_v1";
+const PHRASE_LIST_VERSION = 2;
+const PHRASE_CACHE_KEY = "sentinel_phrase_embeddings_v2";
 let embedder = null;
 let embedderPromise = null;
 let phraseEmbeddings = null;

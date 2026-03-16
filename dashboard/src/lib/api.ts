@@ -7,6 +7,7 @@ export interface AccountSummary {
   score_count: number;
   latest_text_score: number | null;
   latest_image_score: number | null;
+  latest_modality_scores: Record<string, number> | null;
   last_seen: number;
   trend: string;
 }
@@ -15,6 +16,7 @@ export interface ScoreDetail {
   composite: number;
   text_score: number | null;
   image_score: number | null;
+  modality_scores: Record<string, number> | null;
   timestamp: number;
 }
 

@@ -29,6 +29,7 @@ class AccountSummary(BaseModel):
     score_count: int
     latest_text_score: Optional[int]
     latest_image_score: Optional[int]
+    latest_modality_scores: Optional[dict[str, int]] = None
     last_seen: int
     trend: str
 
@@ -38,6 +39,7 @@ class ScoreDetail(BaseModel):
     composite: int
     text_score: Optional[int]
     image_score: Optional[int]
+    modality_scores: Optional[dict[str, int]] = None
     timestamp: int
 
 

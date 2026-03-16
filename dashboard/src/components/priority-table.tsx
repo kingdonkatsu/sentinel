@@ -11,6 +11,7 @@ import {
   trendIcon,
   trendColor,
   riskBorderColor,
+  modalityHint,
 } from "@/lib/utils";
 
 export function PriorityTable() {
@@ -69,61 +70,70 @@ export function PriorityTable() {
 
   return (
     <div className="space-y-3">
-      {accounts.map((account, index) => (
-        <Link
-          key={account.username}
-          href={`/dashboard/${account.username}`}
-          className={`flex items-center gap-4 p-4 rounded-xl bg-slate-800/50 border-l-4 ${riskBorderColor(account.max_composite)} hover:bg-slate-800 transition-all duration-200 group`}
-        >
-          {/* Rank */}
-          <div className="text-slate-500 text-sm font-mono w-6 text-right">
-            #{index + 1}
-          </div>
+      {accounts.map((account, index) => {
+        const hint = modalityHint(account.latest_modality_scores);
 
-          {/* Risk Badge */}
-          <RiskBadge score={account.max_composite} />
-
-          {/* Account Info */}
-          <div className="flex-1 min-w-0">
-            <div className="flex items-center gap-2">
-              <span className="text-sm font-semibold text-slate-200">
-                @{account.username}
-              </span>
-              <span
-                className={`text-sm font-medium ${trendColor(account.trend)}`}
-              >
-                {trendIcon(account.trend)}
-              </span>
+        return (
+          <Link
+            key={account.username}
+            href={`/dashboard/${account.username}`}
+            className={`flex items-center gap-4 p-4 rounded-xl bg-slate-800/50 border-l-4 ${riskBorderColor(account.max_composite)} hover:bg-slate-800 transition-all duration-200 group`}
+          >
+            {/* Rank */}
+            <div className="text-slate-500 text-sm font-mono w-6 text-right">
+              #{index + 1}
             </div>
-            <div className="text-xs text-slate-500 mt-1">
-              {account.score_count} observation
-              {account.score_count !== 1 ? "s" : ""} &middot;{" "}
-              {timeAgo(account.last_seen)}
-            </div>
-          </div>
 
-          {/* Sub-scores */}
-          <div className="hidden sm:flex items-center gap-4 text-xs">
-            <div className="text-center">
-              <div className="text-slate-500 mb-0.5">Text</div>
-              <div className="font-semibold text-slate-300">
-                {renderScore(account.latest_text_score)}
+            {/* Risk Badge */}
+            <RiskBadge score={account.max_composite} />
+
+            {/* Account Info */}
+            <div className="flex-1 min-w-0">
+              <div className="flex items-center gap-2">
+                <span className="text-sm font-semibold text-slate-200">
+                  @{account.username}
+                </span>
+                <span
+                  className={`text-sm font-medium ${trendColor(account.trend)}`}
+                >
+                  {trendIcon(account.trend)}
+                </span>
+              </div>
+              <div className="text-xs text-slate-500 mt-1">
+                {account.score_count} observation
+                {account.score_count !== 1 ? "s" : ""} &middot;{" "}
+                {timeAgo(account.last_seen)}
+              </div>
+              {hint ? (
+                <div className="text-[11px] text-slate-400 mt-1">
+                  {hint}
+                </div>
+              ) : null}
+            </div>
+
+            {/* Sub-scores */}
+            <div className="hidden sm:flex items-center gap-4 text-xs">
+              <div className="text-center">
+                <div className="text-slate-500 mb-0.5">Text</div>
+                <div className="font-semibold text-slate-300">
+                  {renderScore(account.latest_text_score)}
+                </div>
+              </div>
+              <div className="text-center">
+                <div className="text-slate-500 mb-0.5">Image</div>
+                <div className="font-semibold text-slate-300">
+                  {renderScore(account.latest_image_score)}
+                </div>
               </div>
             </div>
-            <div className="text-center">
-              <div className="text-slate-500 mb-0.5">Image</div>
-              <div className="font-semibold text-slate-300">
-                {renderScore(account.latest_image_score)}
-              </div>
-            </div>
-          </div>
 
-          {/* Arrow */}
-          <div className="text-slate-600 group-hover:text-slate-400 transition-colors">
-            &#8250;
-          </div>
-        </Link>
-      ))}
+            {/* Arrow */}
+            <div className="text-slate-600 group-hover:text-slate-400 transition-colors">
+              &#8250;
+            </div>
+          </Link>
+        );
+      })}
     </div>
   );
 }

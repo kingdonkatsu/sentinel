@@ -65,6 +65,8 @@ class ScoreService:
             await self.redis.hdel(account_key, "latest_text")
         if payload.image_score is None:
             await self.redis.hdel(account_key, "latest_image")
+        if payload.modality_scores is None:
+            await self.redis.hdel(account_key, "latest_modality_scores")
         await self.redis.hincrby(account_key, "score_count", 1)
         await self.redis.expire(account_key, TWENTY_FOUR_HOURS)
 
@@ -157,6 +159,10 @@ class ScoreService:
                     return None
                 return int(val)
 
+            def g_json(key: str) -> dict[str, int] | None:
+                val = data.get(key.encode() if isinstance(member_raw, bytes) else key)
+                return self._decode_json_dict(val)
+
             summaries.append(AccountSummary(
                 username=username,
                 latest_composite=g("latest_composite"),
@@ -164,6 +170,7 @@ class ScoreService:
                 score_count=g("score_count"),
                 latest_text_score=g_optional("latest_text"),
                 latest_image_score=g_optional("latest_image"),
+                latest_modality_scores=g_json("latest_modality_scores"),
                 last_seen=g("last_seen"),
                 trend=await self._compute_trend(username),
             ))
@@ -187,6 +194,10 @@ class ScoreService:
                 return None
             return int(val)
 
+        def g_json(key: str) -> dict[str, int] | None:
+            val = data.get(key.encode(), data.get(key))
+            return self._decode_json_dict(val)
+
         scores_list_key = f"scores_list:{username}"
         timestamps = await self.redis.zrange(scores_list_key, 0, -1)
 
@@ -206,10 +217,15 @@ class ScoreService:
                         return None
                     return int(val)
 
+                def gs_json(key: str) -> dict[str, int] | None:
+                    val = score_data.get(key.encode(), score_data.get(key))
+                    return self._decode_json_dict(val)
+
                 scores.append(ScoreDetail(
                     composite=gs("composite"),
                     text_score=gs_optional("text"),
                     image_score=gs_optional("image"),
+                    modality_scores=gs_json("modality_scores"),
                     timestamp=gs("timestamp"),
                 ))
 
@@ -222,6 +238,7 @@ class ScoreService:
             score_count=g("score_count"),
             latest_text_score=g_optional("latest_text"),
             latest_image_score=g_optional("latest_image"),
+            latest_modality_scores=g_json("latest_modality_scores"),
             last_seen=g("last_seen"),
             trend=await self._compute_trend(username),
             scores=scores,
@@ -251,3 +268,25 @@ class ScoreService:
         elif diff < -5:
             return "declining"
         return "stable"
+
+    def _decode_json_dict(self, value: object) -> dict[str, int] | None:
+        if value is None:
+            return None
+
+        if isinstance(value, bytes):
+            value = value.decode()
+
+        if not isinstance(value, str) or not value:
+            return None
+
+        parsed = json.loads(value)
+        if not isinstance(parsed, dict):
+            return None
+
+        result: dict[str, int] = {}
+        for key, item in parsed.items():
+            try:
+                result[str(key)] = int(item)
+            except (TypeError, ValueError):
+                continue
+        return result or None

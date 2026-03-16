@@ -14,6 +14,9 @@ class SemanticHostClient {
     queue = Promise.resolve();
     started = false;
     constructor() {
+        if (!chrome?.runtime?.id) {
+            throw new Error("Extension context invalidated");
+        }
         this.hostUrl = chrome.runtime.getURL(SEMANTIC_HOST_PAGE);
         this.hostOrigin = new URL(this.hostUrl).origin;
     }

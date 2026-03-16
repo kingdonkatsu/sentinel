@@ -282,8 +282,12 @@ class StoryDetector {
             return result;
         }
         catch (error) {
-            const failedAt = Date.now();
-            this.markSignatureProcessed(signature, failedAt);
+            const isContextInvalidated = error instanceof Error && error.message.includes("Extension context invalidated");
+            if (isContextInvalidated) {
+                console.error("[Sentinel] Extension was reloaded — please refresh this Instagram tab to re-enable analysis.");
+                return null;
+            }
+            this.markSignatureProcessed(signature, Date.now());
             console.warn("[Sentinel] Analysis error:", error);
             return null;
         }

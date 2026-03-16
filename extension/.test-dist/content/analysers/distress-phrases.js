@@ -11,7 +11,7 @@
  * maximum-similarity score reflects the closest match rather than an average.
  */
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.URGENCY_PATTERNS = exports.ALL_DISTRESS_PHRASES = exports.DISTRESS_PHRASES_SUBTLE = exports.DISTRESS_PHRASES_MILD = exports.DISTRESS_PHRASES_MODERATE = exports.DISTRESS_PHRASES_HIGH = exports.DISTRESS_PHRASES_SEVERE = void 0;
+exports.URGENCY_PATTERNS = exports.ALL_DISTRESS_PHRASES = exports.DISTRESS_PHRASES_DISSOCIATION = exports.DISTRESS_PHRASES_SUBTLE = exports.DISTRESS_PHRASES_MILD = exports.DISTRESS_PHRASES_MODERATE = exports.DISTRESS_PHRASES_HIGH = exports.DISTRESS_PHRASES_SEVERE = void 0;
 exports.hasUrgencySignal = hasUrgencySignal;
 // Tier 1 — Suicidal ideation / self-harm
 exports.DISTRESS_PHRASES_SEVERE = [
@@ -78,12 +78,29 @@ exports.DISTRESS_PHRASES_SUBTLE = [
     "My mind is a really dark place right now",
     "I've been wearing long sleeves in summer",
 ];
+// Tier 6 — Dissociation / metaphorical self-erasure
+// Covers figurative language youth use to express feeling unreal, invisible, or absent.
+// Not explicit suicidality — closer to hopelessness/subtle tier semantically.
+exports.DISTRESS_PHRASES_DISSOCIATION = [
+    "I feel like I'm already a ghost",
+    "I feel like I've already disappeared",
+    "I don't feel real anymore",
+    "I'm invisible even when I'm standing right there",
+    "Sometimes I feel like I'm not even here",
+    "I feel like a ghost in my own life",
+    "I feel like I'm fading away and no one notices",
+    "I feel disconnected from everything around me",
+    "I keep disappearing inside myself",
+    "Nobody sees the real me anymore",
+    "I feel like I'm slowly disappearing",
+];
 exports.ALL_DISTRESS_PHRASES = [
     ...exports.DISTRESS_PHRASES_SEVERE,
     ...exports.DISTRESS_PHRASES_HIGH,
     ...exports.DISTRESS_PHRASES_MODERATE,
     ...exports.DISTRESS_PHRASES_MILD,
     ...exports.DISTRESS_PHRASES_SUBTLE,
+    ...exports.DISTRESS_PHRASES_DISSOCIATION,
 ];
 /**
  * Urgency markers: these short patterns indicate time-critical distress.

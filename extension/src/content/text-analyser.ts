@@ -16,6 +16,11 @@ const DISTRESS_KEYWORDS: Record<string, number> = {
   depressed: -3, anxiety: -3, crying: -3, lonely: -3, scared: -3,
   hate: -3, hurting: -3, numb: -3, broken: -3, trapped: -3,
   empty: -3, pain: -3, suffer: -3, nightmare: -3, panic: -3,
+  // Dissociation / metaphorical self-erasure (multi-word to avoid slang false positives)
+  "don't feel real": -3, "not even here": -3, "ghost in my own life": -3,
+  "fading away": -3, "disconnected from everything": -3, "already disappeared": -3,
+  "already a ghost": -3, "feel invisible": -3, "feel like a ghost": -3,
+  "feel like i'm not here": -3, "don't feel like myself": -2,
   // Mild distress
   sad: -2, tired: -2, stressed: -2, worried: -2, alone: -2,
   angry: -2, frustrated: -2, exhausted: -2, overwhelmed: -2, lost: -2,
