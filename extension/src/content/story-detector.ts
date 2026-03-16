@@ -48,14 +48,18 @@ const HEADER_AD_LABEL_PATTERNS = [/^ad$/i, /^sponsored$/i];
 
 export class StoryDetector {
   private observer: MutationObserver;
+  private mutationTimer: number | null = null;
   private pollTimer: number | null = null;
   private isProcessing = false;
+  private queuedScanReason: string | null = null;
+  private lastAutoOcrSpikeSignature = "";
   private lastProcessedAt = 0;
   private lastProcessedSignature = "";
   private processedSignatures = new Map<string, number>();
   private pipeline: AnalysisPipeline;
   private readonly THROTTLE_MS = 1500;
-  private readonly POLL_MS = 1500;
+  private readonly POLL_MS = 700;
+  private readonly MUTATION_DEBOUNCE_MS = 120;
   private readonly DUPLICATE_WINDOW_MS = 10000;
   private readonly SIGNATURE_TTL_MS = 120000;
   private scanSequence = 0;
@@ -83,6 +87,10 @@ export class StoryDetector {
 
   stop(): void {
     this.observer.disconnect();
+    if (this.mutationTimer !== null) {
+      window.clearTimeout(this.mutationTimer);
+      this.mutationTimer = null;
+    }
     if (this.pollTimer !== null) {
       window.clearInterval(this.pollTimer);
       this.pollTimer = null;
@@ -129,11 +137,19 @@ export class StoryDetector {
   }
 
   private onMutation(): void {
-    void this.scanForStory("mutation");
+    if (this.mutationTimer !== null) {
+      window.clearTimeout(this.mutationTimer);
+    }
+
+    this.mutationTimer = window.setTimeout(() => {
+      this.mutationTimer = null;
+      void this.scanForStory("mutation");
+    }, this.MUTATION_DEBOUNCE_MS);
   }
 
   private async scanForStory(reason: string): Promise<void> {
     if (this.isProcessing) {
+      this.queuedScanReason = reason;
       return;
     }
 
@@ -143,6 +159,13 @@ export class StoryDetector {
     }
 
     await this.processCurrentFrame(viewer, reason, false);
+
+    if (!this.isProcessing && this.queuedScanReason) {
+      const queuedReason = this.queuedScanReason;
+      this.queuedScanReason = null;
+      const catchupReason = queuedReason === "mutation" ? "catchup" : queuedReason;
+      void this.scanForStory(catchupReason);
+    }
   }
 
   private findStoryViewer(): HTMLElement | null {
@@ -298,15 +321,16 @@ export class StoryDetector {
     force: boolean
   ): Promise<AnalysisResult | null> {
     const now = Date.now();
-    if (!force && now - this.lastProcessedAt < this.THROTTLE_MS) {
-      return null;
-    }
-
     const username = this.extractUsername(viewer);
     const signature = this.buildStorySignature(viewer, username);
+    const isSameAsLast = signature === this.lastProcessedSignature;
+
+    if (!force && isSameAsLast && now - this.lastProcessedAt < this.THROTTLE_MS) {
+      return null;
+    }
     if (
       !force &&
-      signature === this.lastProcessedSignature &&
+      isSameAsLast &&
       now - this.lastProcessedAt < this.DUPLICATE_WINDOW_MS
     ) {
       return null;
@@ -329,6 +353,8 @@ export class StoryDetector {
       });
       return null;
     }
+
+    this.triggerAutoOcrSpike(signature, reason, force);
 
     this.isProcessing = true;
     const scanId = ++this.scanSequence;
@@ -363,6 +389,27 @@ export class StoryDetector {
     }
   }
 
+  private triggerAutoOcrSpike(
+    signature: string,
+    reason: string,
+    force: boolean
+  ): void {
+    if (force || reason === "manual") {
+      return;
+    }
+
+    if (signature === this.lastAutoOcrSpikeSignature) {
+      return;
+    }
+
+    this.lastAutoOcrSpikeSignature = signature;
+    document.dispatchEvent(new CustomEvent("sentinel:ocr-spike"));
+    console.log("[Sentinel] Auto OCR spike triggered", {
+      reason,
+      signature: signature.slice(0, 96),
+    });
+  }
+
   private buildStorySignature(viewer: HTMLElement, username: string): string {
     const mediaSource = this.getPrimaryMediaSource(viewer);
     const routeKey = this.isStoryRouteActive() ? window.location.pathname : "";
@@ -385,17 +432,32 @@ export class StoryDetector {
   private getPrimaryMediaSource(viewer: HTMLElement): string {
     const media = findPrimaryStoryMedia(viewer);
     if (media instanceof HTMLImageElement && (media.currentSrc || media.src)) {
-      return media.currentSrc || media.src;
+      return this.normalizeMediaSourceKey(media.currentSrc || media.src);
     }
 
     if (
       media instanceof HTMLVideoElement &&
       (media.currentSrc || media.src || media.poster)
     ) {
-      return media.currentSrc || media.src || media.poster;
+      return this.normalizeMediaSourceKey(
+        media.currentSrc || media.src || media.poster
+      );
     }
 
     return "no-media";
+  }
+
+  private normalizeMediaSourceKey(value: string): string {
+    if (!value) {
+      return "no-media";
+    }
+
+    try {
+      const parsed = new URL(value, window.location.origin);
+      return parsed.pathname || value;
+    } catch {
+      return value;
+    }
   }
 
   private extractUsername(viewer: HTMLElement): string {
@@ -426,7 +488,7 @@ export class StoryDetector {
       }
     }
 
-    return `unknown_${Date.now()}`;
+    return "unknown_story";
   }
 
   private wasRecentlyProcessed(signature: string, now: number): boolean {

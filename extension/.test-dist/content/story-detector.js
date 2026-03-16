@@ -44,16 +44,21 @@ const SPONSORED_CTA_PATTERNS = [
 const HEADER_AD_LABEL_PATTERNS = [/^ad$/i, /^sponsored$/i];
 class StoryDetector {
     observer;
+    mutationTimer = null;
     pollTimer = null;
     isProcessing = false;
+    queuedScanReason = null;
+    lastAutoOcrSpikeSignature = "";
     lastProcessedAt = 0;
     lastProcessedSignature = "";
     processedSignatures = new Map();
     pipeline;
     THROTTLE_MS = 1500;
-    POLL_MS = 1500;
+    POLL_MS = 700;
+    MUTATION_DEBOUNCE_MS = 120;
     DUPLICATE_WINDOW_MS = 10000;
     SIGNATURE_TTL_MS = 120000;
+    scanSequence = 0;
     constructor(pipeline) {
         this.pipeline = pipeline;
         this.observer = new MutationObserver(this.onMutation.bind(this));
@@ -73,6 +78,10 @@ class StoryDetector {
     }
     stop() {
         this.observer.disconnect();
+        if (this.mutationTimer !== null) {
+            window.clearTimeout(this.mutationTimer);
+            this.mutationTimer = null;
+        }
         if (this.pollTimer !== null) {
             window.clearInterval(this.pollTimer);
             this.pollTimer = null;
@@ -110,10 +119,17 @@ class StoryDetector {
         };
     }
     onMutation() {
-        void this.scanForStory("mutation");
+        if (this.mutationTimer !== null) {
+            window.clearTimeout(this.mutationTimer);
+        }
+        this.mutationTimer = window.setTimeout(() => {
+            this.mutationTimer = null;
+            void this.scanForStory("mutation");
+        }, this.MUTATION_DEBOUNCE_MS);
     }
     async scanForStory(reason) {
         if (this.isProcessing) {
+            this.queuedScanReason = reason;
             return;
         }
         const viewer = this.findStoryViewer();
@@ -121,6 +137,12 @@ class StoryDetector {
             return;
         }
         await this.processCurrentFrame(viewer, reason, false);
+        if (!this.isProcessing && this.queuedScanReason) {
+            const queuedReason = this.queuedScanReason;
+            this.queuedScanReason = null;
+            const catchupReason = queuedReason === "mutation" ? "catchup" : queuedReason;
+            void this.scanForStory(catchupReason);
+        }
     }
     findStoryViewer() {
         const isStoryRoute = this.isStoryRouteActive();
@@ -233,13 +255,14 @@ class StoryDetector {
     }
     async processCurrentFrame(viewer, reason, force) {
         const now = Date.now();
-        if (!force && now - this.lastProcessedAt < this.THROTTLE_MS) {
-            return null;
-        }
         const username = this.extractUsername(viewer);
         const signature = this.buildStorySignature(viewer, username);
+        const isSameAsLast = signature === this.lastProcessedSignature;
+        if (!force && isSameAsLast && now - this.lastProcessedAt < this.THROTTLE_MS) {
+            return null;
+        }
         if (!force &&
-            signature === this.lastProcessedSignature &&
+            isSameAsLast &&
             now - this.lastProcessedAt < this.DUPLICATE_WINDOW_MS) {
             return null;
         }
@@ -259,15 +282,22 @@ class StoryDetector {
             });
             return null;
         }
+        this.triggerAutoOcrSpike(signature, reason, force);
         this.isProcessing = true;
+        const scanId = ++this.scanSequence;
+        const startedAt = performance.now();
         try {
             const result = await this.pipeline.analyse(viewer, username);
+            const elapsedMs = Math.round(performance.now() - startedAt);
             this.lastProcessedAt = now;
             this.lastProcessedSignature = signature;
             this.markSignatureProcessed(signature, now);
             console.log("[Sentinel] Story analysed", {
+                scanId,
                 reason,
                 username: result.score.username,
+                signature: signature.slice(0, 96),
+                elapsedMs,
                 composite: result.score.composite,
                 text: result.score.textScore,
                 image: result.score.imageScore,
@@ -283,6 +313,20 @@ class StoryDetector {
         finally {
             this.isProcessing = false;
         }
+    }
+    triggerAutoOcrSpike(signature, reason, force) {
+        if (force || reason === "manual") {
+            return;
+        }
+        if (signature === this.lastAutoOcrSpikeSignature) {
+            return;
+        }
+        this.lastAutoOcrSpikeSignature = signature;
+        document.dispatchEvent(new CustomEvent("sentinel:ocr-spike"));
+        console.log("[Sentinel] Auto OCR spike triggered", {
+            reason,
+            signature: signature.slice(0, 96),
+        });
     }
     buildStorySignature(viewer, username) {
         const mediaSource = this.getPrimaryMediaSource(viewer);
@@ -302,13 +346,25 @@ class StoryDetector {
     getPrimaryMediaSource(viewer) {
         const media = (0, image_analyser_1.findPrimaryStoryMedia)(viewer);
         if (media instanceof HTMLImageElement && (media.currentSrc || media.src)) {
-            return media.currentSrc || media.src;
+            return this.normalizeMediaSourceKey(media.currentSrc || media.src);
         }
         if (media instanceof HTMLVideoElement &&
             (media.currentSrc || media.src || media.poster)) {
-            return media.currentSrc || media.src || media.poster;
+            return this.normalizeMediaSourceKey(media.currentSrc || media.src || media.poster);
         }
         return "no-media";
+    }
+    normalizeMediaSourceKey(value) {
+        if (!value) {
+            return "no-media";
+        }
+        try {
+            const parsed = new URL(value, window.location.origin);
+            return parsed.pathname || value;
+        }
+        catch {
+            return value;
+        }
     }
     extractUsername(viewer) {
         const link = this.findUsernameLink(viewer);
@@ -331,7 +387,7 @@ class StoryDetector {
                 return text;
             }
         }
-        return `unknown_${Date.now()}`;
+        return "unknown_story";
     }
     wasRecentlyProcessed(signature, now) {
         this.pruneProcessedSignatures(now);
