@@ -1,4 +1,4 @@
-import { findPrimaryStoryMedia } from "../image-analyser";
+import { captureStoryImage, findPrimaryStoryMedia } from "../image-analyser";
 import { VisualEmotionAnalyser } from "../analysers/visual-emotion-analyser";
 import { cloneImageData } from "../privacy/secure-cleanup";
 
@@ -57,7 +57,18 @@ class OcrSpike {
 
     this.busy = true;
     const t0 = performance.now();
-    let imageModel: { score: number; confidence: number } | null = null;
+    let imageModel:
+      | {
+          score: number;
+          confidence: number;
+          strategy: string;
+          source: "story-capture" | "ocr-capture" | "analysis-error";
+          mlScore?: number;
+          faceCount?: number;
+          heuristicTone?: number;
+          heuristicScene?: number;
+        }
+      | null = null;
     this.renderOverlay("running", "Running OCR spike...");
 
     try {
@@ -72,7 +83,9 @@ class OcrSpike {
         throw new Error("Unable to capture current story frame.");
       }
       this.renderCapturePreview(capture);
-      imageModel = await this.analyseCapturedImage(capture);
+      imageModel =
+        (await this.analyseViewerImageModel(viewer)) ??
+        (await this.analyseCapturedImage(capture));
 
       const result = (await chrome.runtime.sendMessage({
         type: "OCR_SPIKE_RECOGNIZE",
@@ -100,6 +113,20 @@ class OcrSpike {
         typeof imageModel.confidence === "number"
           ? `${Math.round(imageModel.confidence * 100)}%`
           : "n/a";
+      const imageModelAdjustedScore = this.confidenceAdjustedImageScore(
+        imageModel.score,
+        imageModel.confidence
+      );
+      const imageModelStrategy =
+        imageModel.strategy === "face-blend"
+          ? `face-blend${typeof imageModel.faceCount === "number" ? ` (${imageModel.faceCount} face)` : ""}`
+          : imageModel.strategy;
+      const imageModelSourceLabel =
+        imageModel.source === "story-capture"
+          ? "pipeline story capture"
+          : imageModel.source === "ocr-capture"
+            ? "OCR capture"
+            : imageModel.source;
 
       console.log("[Sentinel][OCR Spike] Result", {
         trigger: reason,
@@ -108,6 +135,12 @@ class OcrSpike {
         captureResolution: `${capture.width}x${capture.height}`,
         imageModelScore: imageModel.score,
         imageModelConfidence: imageModel.confidence,
+        imageModelAdjustedScore,
+        imageModelStrategy,
+        imageModelSource: imageModel.source,
+        imageModelMlScore: imageModel.mlScore,
+        heuristicTone: imageModel.heuristicTone,
+        heuristicScene: imageModel.heuristicScene,
         text,
         confidence,
         wordCount,
@@ -118,9 +151,18 @@ class OcrSpike {
         [
           `OCR spike complete (${totalLatency}ms)`,
           `Image model score: ${imageModel.score} (${imageModelConfidenceText})`,
+          `Image model adjusted score: ${imageModelAdjustedScore}`,
+          `Image model path: ${imageModelStrategy}`,
+          `Image model source: ${imageModelSourceLabel}`,
+          typeof imageModel.heuristicTone === "number" &&
+          typeof imageModel.heuristicScene === "number"
+            ? `Heuristic components (tone/scene): ${imageModel.heuristicTone}/${imageModel.heuristicScene}`
+            : "",
           `Confidence: ${confidence ?? "n/a"}`,
           text.length > 0 ? text : "(empty)",
-        ].join("\n")
+        ]
+          .filter((line) => line.length > 0)
+          .join("\n")
       );
     } catch (error) {
       const message =
@@ -138,8 +180,18 @@ class OcrSpike {
           imageModel
             ? `Image model score: ${imageModel.score} (${Math.round(imageModel.confidence * 100)}%)`
             : "Image model score: n/a",
+          imageModel
+            ? `Image model adjusted score: ${this.confidenceAdjustedImageScore(
+                imageModel.score,
+                imageModel.confidence
+              )}`
+            : "",
+          imageModel ? `Image model path: ${imageModel.strategy}` : "",
+          imageModel ? `Image model source: ${imageModel.source}` : "",
           message,
-        ].join("\n")
+        ]
+          .filter((line) => line.length > 0)
+          .join("\n")
       );
     } finally {
       this.busy = false;
@@ -465,21 +517,102 @@ class OcrSpike {
     };
   }
 
-  private async analyseCapturedImage(
-    capture: ImageData
-  ): Promise<{ score: number; confidence: number }> {
+  private confidenceAdjustedImageScore(score: number, confidence: number): number {
+    const c = Math.max(0, Math.min(1, confidence));
+    // Pull uncertain scores toward neutral (50).
+    return Math.round(50 + (score - 50) * c);
+  }
+
+  private async analyseViewerImageModel(viewer: HTMLElement | null): Promise<{
+    score: number;
+    confidence: number;
+    strategy: string;
+    source: "story-capture" | "ocr-capture" | "analysis-error";
+    mlScore?: number;
+    faceCount?: number;
+    heuristicTone?: number;
+    heuristicScene?: number;
+  } | null> {
+    if (!viewer) {
+      return null;
+    }
+
+    try {
+      const frame = await captureStoryImage(viewer);
+      if (!frame) {
+        return null;
+      }
+
+      const result = await this.visualAnalyser.scoreCapturedFrame(cloneImageData(frame));
+      console.log("[Sentinel][OCR Spike] Image model analysed (story-capture)", {
+        score: result.score,
+        confidence: result.confidence,
+        strategy: result.strategy,
+        mlScore: result.mlScore,
+        faceCount: result.faceCount,
+        heuristicTone: result.heuristic.toneScore,
+        heuristicScene: result.heuristic.sceneCueScore,
+      });
+      return {
+        score: result.score,
+        confidence: result.confidence,
+        strategy: result.strategy,
+        source: "story-capture",
+        mlScore: result.mlScore,
+        faceCount: result.faceCount,
+        heuristicTone: result.heuristic.toneScore,
+        heuristicScene: result.heuristic.sceneCueScore,
+      };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      console.warn("[Sentinel][OCR Spike] Story-capture image analysis failed", {
+        error: message,
+      });
+      return null;
+    }
+  }
+
+  private async analyseCapturedImage(capture: ImageData): Promise<{
+    score: number;
+    confidence: number;
+    strategy: string;
+    source: "story-capture" | "ocr-capture" | "analysis-error";
+    mlScore?: number;
+    faceCount?: number;
+    heuristicTone?: number;
+    heuristicScene?: number;
+  }> {
     try {
       const cloned = cloneImageData(capture);
       const result = await this.visualAnalyser.scoreCapturedFrame(cloned);
       console.log("[Sentinel][OCR Spike] Image model analysed", {
         score: result.score,
         confidence: result.confidence,
+        strategy: result.strategy,
+        mlScore: result.mlScore,
+        faceCount: result.faceCount,
+        heuristicTone: result.heuristic.toneScore,
+        heuristicScene: result.heuristic.sceneCueScore,
       });
-      return result;
+      return {
+        score: result.score,
+        confidence: result.confidence,
+        strategy: result.strategy,
+        source: "ocr-capture",
+        mlScore: result.mlScore,
+        faceCount: result.faceCount,
+        heuristicTone: result.heuristic.toneScore,
+        heuristicScene: result.heuristic.sceneCueScore,
+      };
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       console.warn("[Sentinel][OCR Spike] Image model analysis failed", { error: message });
-      return { score: 50, confidence: 0 };
+      return {
+        score: 50,
+        confidence: 0,
+        strategy: "analysis-error",
+        source: "analysis-error",
+      };
     }
   }
 

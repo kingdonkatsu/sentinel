@@ -119,9 +119,11 @@ class VisualEmotionAnalyser {
         canvas.width = 224;
         canvas.height = 224;
         try {
-            const heuristicScore = (0, image_analyser_1.analyseImage)(imageData);
+            const normalizedFrame = this.normalizeToModelFrame(imageData, canvas);
+            const heuristic = (0, image_analyser_1.analyseImageDetailed)(normalizedFrame);
+            const heuristicScore = heuristic.score;
             // Attempt ML-based scoring
-            const mlResult = await this.scoreWithFaceApi(imageData, canvas);
+            const mlResult = await this.scoreWithFaceApi(normalizedFrame, canvas);
             if (mlResult !== null) {
                 const mlWeight = mlResult.faceCount >= 2 ? 0.5 : 0.7;
                 const blendedScore = Math.round(mlResult.score * mlWeight + heuristicScore * (1 - mlWeight));
@@ -131,17 +133,46 @@ class VisualEmotionAnalyser {
                 return {
                     score: blendedScore,
                     confidence: blendedConfidence,
+                    strategy: "face-blend",
+                    faceCount: mlResult.faceCount,
+                    mlScore: mlResult.score,
+                    heuristic,
                 };
             }
             // Fallback: colour histogram heuristic
             return {
                 score: heuristicScore,
                 confidence: 0.3,
+                strategy: "heuristic",
+                heuristic,
             };
         }
         finally {
             (0, secure_cleanup_1.zeroImageData)(imageData);
             (0, secure_cleanup_1.destroyCanvas)(canvas);
+        }
+    }
+    normalizeToModelFrame(imageData, targetCanvas) {
+        if (imageData.width === 224 && imageData.height === 224) {
+            return imageData;
+        }
+        const sourceCanvas = document.createElement("canvas");
+        sourceCanvas.width = imageData.width;
+        sourceCanvas.height = imageData.height;
+        const sourceContext = sourceCanvas.getContext("2d");
+        const targetContext = targetCanvas.getContext("2d");
+        if (!sourceContext || !targetContext) {
+            sourceCanvas.remove();
+            return imageData;
+        }
+        try {
+            sourceContext.putImageData(imageData, 0, 0);
+            targetContext.clearRect(0, 0, 224, 224);
+            targetContext.drawImage(sourceCanvas, 0, 0, 224, 224);
+            return targetContext.getImageData(0, 0, 224, 224);
+        }
+        finally {
+            sourceCanvas.remove();
         }
     }
     async scoreWithFaceApi(imageData, canvas) {

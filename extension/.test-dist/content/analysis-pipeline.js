@@ -92,6 +92,21 @@ class AnalysisPipeline {
         // ── Fuse with calibrated weights ─────────────────────────────────────
         const calibratedWeights = this.calibrator.getWeights();
         const { composite, overallConfidence, effectiveWeights } = composite_scorer_1.compositeScorer.fuse(modalityResults, calibratedWeights);
+        const compositeDrivers = this.computeCompositeDrivers(modalityResults, effectiveWeights);
+        const imageScore = Math.round(visualResult.available ? visualResult.score : videoResult.score);
+        const reasoning = this.buildImageReasoning(visualResult, videoResult, imageScore);
+        const imageScoreSource = visualResult.available ? "visual" : videoResult.available ? "video" : "neutral-default";
+        const imageScoreRaw = imageScoreSource === "visual"
+            ? visualResult.score
+            : imageScoreSource === "video"
+                ? videoResult.score
+                : 50;
+        const imageConfidenceRaw = imageScoreSource === "visual"
+            ? visualResult.confidence
+            : imageScoreSource === "video"
+                ? videoResult.confidence
+                : 0;
+        const imageScoreAdjusted = this.confidenceAdjustedImageScore(imageScoreRaw, imageConfidenceRaw);
         // ── Build score payload (only numbers, zero content) ─────────────────
         const modalityScores = {};
         for (const r of modalityResults) {
@@ -101,15 +116,27 @@ class AnalysisPipeline {
         const score = {
             composite,
             textScore: Math.round(textResult.score),
-            imageScore: Math.round(visualResult.available ? visualResult.score : videoResult.score),
+            imageScore,
             timestamp: Date.now(),
             username,
+            reasoning,
         };
         console.log("[Sentinel] Score v2:", {
             username,
             timestamp: score.timestamp,
             composite,
-            confidence: overallConfidence.toFixed(2),
+            // Keep `confidence` aligned with image/visual confidence for easier
+            // comparison against OCR spike diagnostics.
+            confidence: imageConfidenceRaw.toFixed(2),
+            overallConfidence: overallConfidence.toFixed(2),
+            imageScore,
+            imageScoreSource,
+            imageScoreRaw: Number(imageScoreRaw.toFixed(2)),
+            imageScoreAdjusted,
+            imageConfidence: imageConfidenceRaw.toFixed(2),
+            reasoning: reasoning.summary,
+            confidenceBand: reasoning.confidenceBand,
+            caveats: reasoning.caveats,
             modalities: Object.fromEntries(modalityResults
                 .filter((r) => r.available)
                 .map((r) => [r.modality, `${r.score}@${r.confidence.toFixed(2)}`])),
@@ -118,16 +145,20 @@ class AnalysisPipeline {
                 .map((r) => r.modality),
             inferenceMs: Object.fromEntries(modalityResults.map((r) => [r.modality, Math.round(r.inferenceTimeMs)])),
             weights: Object.fromEntries(Object.entries(effectiveWeights).map(([k, v]) => [k, (v ?? 0).toFixed(3)])),
-            drivers: modalityResults
-                .filter((r) => r.available)
-                .map((r) => ({
-                modality: r.modality,
-                deltaFromNeutral: Math.round((r.score - 50) * (effectiveWeights[r.modality] ?? 0)),
-                score: r.score,
-                confidence: r.confidence,
-            }))
-                .sort((a, b) => Math.abs(b.deltaFromNeutral) - Math.abs(a.deltaFromNeutral))
-                .slice(0, 3),
+            drivers: reasoning.topDrivers.map((driver) => ({
+                modality: driver.modality,
+                deltaFromNeutral: driver.impact,
+                score: driver.score,
+                confidence: driver.confidence,
+                weight: driver.weight,
+            })),
+            compositeDrivers: compositeDrivers.slice(0, 3).map((driver) => ({
+                modality: driver.modality,
+                weightedDelta: driver.impact,
+                score: driver.score,
+                confidence: driver.confidence,
+                weight: driver.weight,
+            })),
         });
         // ── Show overlay and transmit ─────────────────────────────────────────
         if (composite >= this.threshold) {
@@ -193,6 +224,87 @@ class AnalysisPipeline {
             available: true,
             inferenceTimeMs: performance.now() - t0,
         };
+    }
+    computeCompositeDrivers(modalityResults, effectiveWeights) {
+        return modalityResults
+            .filter((r) => r.available)
+            .map((r) => {
+            const weight = effectiveWeights[r.modality] ?? 0;
+            const impact = (r.score - 50) * weight;
+            return {
+                modality: r.modality,
+                score: Math.round(r.score),
+                confidence: Number(r.confidence.toFixed(2)),
+                weight: Number(weight.toFixed(3)),
+                impact: Math.round(impact),
+            };
+        })
+            .sort((a, b) => Math.abs(b.impact) - Math.abs(a.impact));
+    }
+    buildImageReasoning(visualResult, videoResult, imageScore) {
+        const imageModalities = [visualResult, videoResult].filter((result) => result.available);
+        const chosen = visualResult.available
+            ? visualResult
+            : videoResult.available
+                ? videoResult
+                : null;
+        const chosenConfidence = chosen?.confidence ?? 0;
+        const confidenceBand = chosenConfidence >= 0.65
+            ? "high"
+            : chosenConfidence >= 0.4
+                ? "medium"
+                : "low";
+        const caveats = [];
+        if (!visualResult.available && !videoResult.available) {
+            caveats.push("No visual or video modality was available.");
+        }
+        if (confidenceBand === "low") {
+            caveats.push("Low visual confidence; image signal is weak.");
+        }
+        const topDrivers = imageModalities
+            .map((result) => ({
+            modality: result.modality,
+            score: Math.round(result.score),
+            confidence: Number(result.confidence.toFixed(2)),
+            weight: 1,
+            impact: Math.round(result.score - 50),
+        }))
+            .sort((a, b) => Math.abs(b.impact) - Math.abs(a.impact));
+        if (topDrivers.length >= 2) {
+            const [first, second] = topDrivers;
+            const disagreement = Math.abs(first.score - second.score);
+            if (disagreement >= 12) {
+                caveats.push(`Visual and video signals disagree by ${disagreement} points.`);
+            }
+        }
+        if (chosen && chosen.confidence <= 0.35) {
+            caveats.push("Likely heuristic fallback or low-quality frame capture.");
+        }
+        if (!chosen) {
+            return {
+                summary: "Image/visual reasoning only: no image modality available, so imageScore = 50 (neutral default).",
+                confidenceBand: "low",
+                topDrivers: [],
+                caveats,
+            };
+        }
+        const secondary = chosen.modality === "visual"
+            ? imageModalities.find((result) => result.modality === "video")
+            : imageModalities.find((result) => result.modality === "visual");
+        const secondaryNote = secondary
+            ? ` Secondary ${secondary.modality} scored ${Math.round(secondary.score)}/100 (${secondary.confidence.toFixed(2)}).`
+            : "";
+        return {
+            summary: `Image/visual reasoning only: imageScore = round(${chosen.modality}.score ${chosen.score.toFixed(2)}) = ${imageScore}. Source confidence ${chosen.confidence.toFixed(2)}.${secondaryNote}`,
+            confidenceBand,
+            topDrivers: topDrivers.slice(0, 3),
+            caveats,
+        };
+    }
+    confidenceAdjustedImageScore(score, confidence) {
+        const c = Math.max(0, Math.min(1, confidence));
+        // Pull uncertain scores toward neutral (50); retain strong scores when confidence is high.
+        return Math.round(50 + (score - 50) * c);
     }
 }
 exports.AnalysisPipeline = AnalysisPipeline;

@@ -19,9 +19,10 @@
 
 import type { Analyser, ModalityResult } from "../../shared/types";
 import {
-  analyseImage,
+  analyseImageDetailed,
   captureStoryImage,
   findPrimaryStoryMedia,
+  type ImageHeuristicBreakdown,
 } from "../image-analyser";
 import { zeroImageData, destroyCanvas } from "../privacy/secure-cleanup";
 import type * as FaceApiType from "@vladmandic/face-api";
@@ -73,6 +74,10 @@ function getModelsUrl(): string {
 export interface CapturedFrameScore {
   score: number;
   confidence: number;
+  strategy: "face-blend" | "heuristic";
+  faceCount?: number;
+  mlScore?: number;
+  heuristic: ImageHeuristicBreakdown;
 }
 
 export class VisualEmotionAnalyser implements Analyser {
@@ -106,10 +111,12 @@ export class VisualEmotionAnalyser implements Analyser {
     canvas.height = 224;
 
     try {
-      const heuristicScore = analyseImage(imageData);
+      const normalizedFrame = this.normalizeToModelFrame(imageData, canvas);
+      const heuristic = analyseImageDetailed(normalizedFrame);
+      const heuristicScore = heuristic.score;
 
       // Attempt ML-based scoring
-      const mlResult = await this.scoreWithFaceApi(imageData, canvas);
+      const mlResult = await this.scoreWithFaceApi(normalizedFrame, canvas);
       if (mlResult !== null) {
         const mlWeight = mlResult.faceCount >= 2 ? 0.5 : 0.7;
         const blendedScore = Math.round(
@@ -123,6 +130,10 @@ export class VisualEmotionAnalyser implements Analyser {
         return {
           score: blendedScore,
           confidence: blendedConfidence,
+          strategy: "face-blend",
+          faceCount: mlResult.faceCount,
+          mlScore: mlResult.score,
+          heuristic,
         };
       }
 
@@ -130,10 +141,41 @@ export class VisualEmotionAnalyser implements Analyser {
       return {
         score: heuristicScore,
         confidence: 0.3,
+        strategy: "heuristic",
+        heuristic,
       };
     } finally {
       zeroImageData(imageData);
       destroyCanvas(canvas);
+    }
+  }
+
+  private normalizeToModelFrame(
+    imageData: ImageData,
+    targetCanvas: HTMLCanvasElement
+  ): ImageData {
+    if (imageData.width === 224 && imageData.height === 224) {
+      return imageData;
+    }
+
+    const sourceCanvas = document.createElement("canvas");
+    sourceCanvas.width = imageData.width;
+    sourceCanvas.height = imageData.height;
+
+    const sourceContext = sourceCanvas.getContext("2d");
+    const targetContext = targetCanvas.getContext("2d");
+    if (!sourceContext || !targetContext) {
+      sourceCanvas.remove();
+      return imageData;
+    }
+
+    try {
+      sourceContext.putImageData(imageData, 0, 0);
+      targetContext.clearRect(0, 0, 224, 224);
+      targetContext.drawImage(sourceCanvas, 0, 0, 224, 224);
+      return targetContext.getImageData(0, 0, 224, 224);
+    } finally {
+      sourceCanvas.remove();
     }
   }
 

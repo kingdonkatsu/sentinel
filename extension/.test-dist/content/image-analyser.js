@@ -1,6 +1,7 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.analyseImage = analyseImage;
+exports.analyseImageDetailed = analyseImageDetailed;
 exports.findPrimaryStoryMedia = findPrimaryStoryMedia;
 exports.captureStoryImage = captureStoryImage;
 exports.captureVideoFrame = captureVideoFrame;
@@ -15,6 +16,9 @@ exports.captureVideoFrame = captureVideoFrame;
  * stories a stronger environmental-risk signal than tone-only scoring.
  */
 function analyseImage(imageData) {
+    return analyseImageDetailed(imageData).score;
+}
+function analyseImageDetailed(imageData) {
     const data = imageData.data;
     let totalBrightness = 0;
     let totalSaturation = 0;
@@ -48,8 +52,17 @@ function analyseImage(imageData) {
     const redScore = redRatio * 100;
     const toneScore = darknessScore * 0.5 + desaturationScore * 0.3 + redScore * 0.2;
     const sceneCueScore = computeSceneCueScore(imageData, avgBrightness, avgSaturation);
-    const score = toneScore * 0.75 + sceneCueScore * 0.25;
-    return clampScore(score);
+    const score = clampScore(toneScore * 0.75 + sceneCueScore * 0.25);
+    return {
+        score,
+        toneScore: clampScore(toneScore),
+        sceneCueScore: clampScore(sceneCueScore),
+        darknessScore: clampScore(darknessScore),
+        desaturationScore: clampScore(desaturationScore),
+        redScore: clampScore(redScore),
+        avgBrightness: Number(avgBrightness.toFixed(3)),
+        avgSaturation: Number(avgSaturation.toFixed(3)),
+    };
 }
 function computeSceneCueScore(imageData, avgBrightness, avgSaturation) {
     const sourceWidth = imageData.width;

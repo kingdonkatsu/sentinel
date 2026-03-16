@@ -9,6 +9,23 @@
  * stories a stronger environmental-risk signal than tone-only scoring.
  */
 export function analyseImage(imageData: ImageData): number {
+  return analyseImageDetailed(imageData).score;
+}
+
+export interface ImageHeuristicBreakdown {
+  score: number;
+  toneScore: number;
+  sceneCueScore: number;
+  darknessScore: number;
+  desaturationScore: number;
+  redScore: number;
+  avgBrightness: number;
+  avgSaturation: number;
+}
+
+export function analyseImageDetailed(
+  imageData: ImageData
+): ImageHeuristicBreakdown {
   const data = imageData.data;
   let totalBrightness = 0;
   let totalSaturation = 0;
@@ -49,8 +66,17 @@ export function analyseImage(imageData: ImageData): number {
   const toneScore = darknessScore * 0.5 + desaturationScore * 0.3 + redScore * 0.2;
   const sceneCueScore = computeSceneCueScore(imageData, avgBrightness, avgSaturation);
 
-  const score = toneScore * 0.75 + sceneCueScore * 0.25;
-  return clampScore(score);
+  const score = clampScore(toneScore * 0.75 + sceneCueScore * 0.25);
+  return {
+    score,
+    toneScore: clampScore(toneScore),
+    sceneCueScore: clampScore(sceneCueScore),
+    darknessScore: clampScore(darknessScore),
+    desaturationScore: clampScore(desaturationScore),
+    redScore: clampScore(redScore),
+    avgBrightness: Number(avgBrightness.toFixed(3)),
+    avgSaturation: Number(avgSaturation.toFixed(3)),
+  };
 }
 
 function computeSceneCueScore(

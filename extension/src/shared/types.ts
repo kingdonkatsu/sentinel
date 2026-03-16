@@ -4,6 +4,7 @@ export interface RiskScore {
   imageScore: number;
   timestamp: number;
   username: string;
+  reasoning?: ScoreReasoning;
 }
 
 export interface SentinelWeights {
@@ -49,6 +50,21 @@ export type ModalityType =
   | "video"
   | "audio"
   | "metadata";
+
+export interface ScoreReasoningDriver {
+  modality: ModalityType;
+  score: number;
+  confidence: number;
+  weight: number;
+  impact: number;
+}
+
+export interface ScoreReasoning {
+  summary: string;
+  confidenceBand: "low" | "medium" | "high";
+  topDrivers: ScoreReasoningDriver[];
+  caveats: string[];
+}
 
 export interface ModalityResult {
   modality: ModalityType;

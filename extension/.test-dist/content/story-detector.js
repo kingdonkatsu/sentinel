@@ -114,7 +114,7 @@ class StoryDetector {
         }
         return {
             ok: true,
-            message: `Analysed @${result.score.username} (${result.score.composite}/100)`,
+            message: `Analysed @${result.score.username} (${result.score.composite}/100): ${result.score.reasoning?.summary ?? "No reasoning available."}`,
             result,
         };
     }
@@ -296,11 +296,13 @@ class StoryDetector {
                 scanId,
                 reason,
                 username: result.score.username,
+                scoreTimestamp: result.score.timestamp,
                 signature: signature.slice(0, 96),
                 elapsedMs,
                 composite: result.score.composite,
                 text: result.score.textScore,
                 image: result.score.imageScore,
+                reasoning: result.score.reasoning?.summary,
                 transmitted: result.transmitted,
                 transmissionError: result.transmissionError,
             });
