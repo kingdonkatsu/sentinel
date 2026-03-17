@@ -44,7 +44,7 @@ export function OutreachCard({
   }
 
   return (
-    <div className="bg-gradient-to-br from-slate-800/80 to-slate-800/40 rounded-xl p-5 border border-slate-700/50">
+    <div className="bg-white rounded-xl p-5 border border-slate-200 shadow-sm">
       <h3 className="text-sm font-semibold text-purple-400 mb-4 flex items-center gap-2">
         <span className="w-5 h-5 bg-purple-500/20 rounded flex items-center justify-center text-xs">
           &#9993;
@@ -54,20 +54,20 @@ export function OutreachCard({
 
       {/* Opening */}
       <div className="mb-4">
-        <p className="text-xs text-slate-500 mb-1">Opening</p>
-        <p className="text-sm text-slate-200 bg-slate-900/50 rounded-lg px-4 py-3 border-l-2 border-purple-500">
+        <p className="text-xs text-slate-400 mb-1">Opening</p>
+        <p className="text-sm text-slate-800 bg-purple-50 rounded-lg px-4 py-3 border-l-2 border-primary">
           &ldquo;{suggestion.opening}&rdquo;
         </p>
       </div>
 
       {/* Follow-ups */}
       <div className="mb-4">
-        <p className="text-xs text-slate-500 mb-2">Follow-ups</p>
+        <p className="text-xs text-slate-400 mb-2">Follow-ups</p>
         <ul className="space-y-2">
           {suggestion.follow_ups.map((followUp, i) => (
             <li
               key={i}
-              className="text-sm text-slate-300 bg-slate-900/30 rounded-lg px-4 py-2"
+              className="text-sm text-slate-700 bg-slate-50 rounded-lg px-4 py-2 border border-slate-100"
             >
               &ldquo;{followUp}&rdquo;
             </li>
@@ -76,11 +76,11 @@ export function OutreachCard({
       </div>
 
       {/* Tone Note */}
-      <div className="bg-blue-900/20 border border-blue-800/30 rounded-lg p-3">
-        <p className="text-xs text-blue-400 font-medium mb-1">
+      <div className="bg-blue-50 border border-blue-100 rounded-lg p-3">
+        <p className="text-xs text-blue-600 font-semibold mb-1">
           Approach Guidance
         </p>
-        <p className="text-xs text-blue-300/80">{suggestion.tone_note}</p>
+        <p className="text-xs text-blue-800/70">{suggestion.tone_note}</p>
       </div>
     </div>
   );

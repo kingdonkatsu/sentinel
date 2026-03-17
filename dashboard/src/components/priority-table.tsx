@@ -55,8 +55,8 @@ export function PriorityTable() {
 
   if (!accounts || accounts.length === 0) {
     return (
-      <div className="bg-slate-800/50 rounded-lg p-8 text-center">
-        <p className="text-slate-400 text-lg mb-2">No flagged accounts yet</p>
+      <div className="bg-white border border-slate-200 rounded-xl p-12 text-center shadow-sm">
+        <p className="text-slate-900 font-bold mb-2">No flagged accounts yet</p>
         <p className="text-slate-500 text-sm">
           Scores will appear here as the extension analyses Instagram Stories.
         </p>

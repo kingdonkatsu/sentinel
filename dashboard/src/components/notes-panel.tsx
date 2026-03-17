@@ -23,9 +23,9 @@ export function NotesPanel({ token }: NotesPanelProps) {
   }
 
   return (
-    <div className="bg-slate-800/50 rounded-xl p-5">
+    <div className="bg-white rounded-xl p-5 border border-slate-200 shadow-sm">
       <div className="flex items-center justify-between mb-3">
-        <h3 className="text-sm font-semibold text-slate-300">
+        <h3 className="text-sm font-semibold text-slate-800">
           Case Notes
           <span className="text-xs font-normal text-slate-500 ml-2">
             (stored locally only)
@@ -40,12 +40,12 @@ export function NotesPanel({ token }: NotesPanelProps) {
         value={notes}
         onChange={(e) => setNotes(e.target.value)}
         placeholder="Add your case notes here. These are stored locally on your device and never sent to the server..."
-        className="w-full h-32 bg-slate-900/50 border border-slate-700 rounded-lg p-3 text-sm text-slate-300 placeholder:text-slate-600 focus:border-blue-500 focus:outline-none resize-none"
+        className="w-full h-32 bg-slate-50 border border-slate-200 rounded-lg p-3 text-sm text-slate-700 placeholder:text-slate-400 focus:border-primary/50 focus:ring-2 focus:ring-primary/10 focus:outline-none resize-none transition-all"
       />
 
       <button
         onClick={handleSave}
-        className="mt-2 px-4 py-1.5 bg-slate-700 hover:bg-slate-600 text-slate-300 text-xs font-medium rounded-lg transition-colors"
+        className="mt-2 px-4 py-1.5 bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-medium rounded-lg transition-colors border border-slate-200"
       >
         Save Notes
       </button>

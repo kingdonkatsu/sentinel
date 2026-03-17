@@ -64,7 +64,7 @@ export default function RootLayout({
             </nav>
 
             {/* Main content */}
-            <main className="flex-1 pl-64 pb-32">
+            <main className="flex-1 pl-64 pb-32 bg-slate-50/50">
               <div className="p-12">
                 {children}
               </div>

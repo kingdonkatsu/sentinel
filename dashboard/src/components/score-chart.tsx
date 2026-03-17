@@ -36,23 +36,24 @@ export function ScoreChart({ scores }: ScoreChartProps) {
   }));
 
   return (
-    <div className="bg-slate-800/50 rounded-xl p-5">
-      <h3 className="text-sm font-semibold text-slate-300 mb-4">
+    <div className="bg-white rounded-xl p-5 border border-slate-200 shadow-sm">
+      <h3 className="text-sm font-semibold text-slate-800 mb-4">
         Score Timeline (Last 24h)
       </h3>
       <ResponsiveContainer width="100%" height={250}>
         <LineChart data={chartData}>
-          <CartesianGrid strokeDasharray="3 3" stroke="#334155" />
-          <XAxis dataKey="time" stroke="#64748b" fontSize={11} />
-          <YAxis domain={[0, 100]} stroke="#64748b" fontSize={11} />
+          <CartesianGrid strokeDasharray="3 3" stroke="#f1f5f9" />
+          <XAxis dataKey="time" stroke="#94a3b8" fontSize={11} />
+          <YAxis domain={[0, 100]} stroke="#94a3b8" fontSize={11} />
           <Tooltip
             contentStyle={{
-              backgroundColor: "#1e293b",
-              border: "1px solid #334155",
+              backgroundColor: "#ffffff",
+              border: "1px solid #e2e8f0",
               borderRadius: "8px",
               fontSize: "12px",
+              boxShadow: "0 4px 6px -1px rgb(0 0 0 / 0.1)",
             }}
-            labelStyle={{ color: "#94a3b8" }}
+            labelStyle={{ color: "#64748b" }}
           />
           <Legend wrapperStyle={{ fontSize: "12px" }} />
           <Line

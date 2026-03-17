@@ -86,7 +86,7 @@ export default function AccountDetailPage() {
       </Link>
 
       {/* Header */}
-      <div className="bg-slate-800/50 rounded-xl p-6 border border-slate-700/50">
+      <div className="bg-white rounded-xl p-6 border border-slate-200 shadow-sm">
         <div className="flex items-start justify-between">
           <div>
             <div className="flex items-center gap-3 mb-2">
@@ -97,7 +97,7 @@ export default function AccountDetailPage() {
                 {trendIcon(account.trend)} {account.trend}
               </span>
             </div>
-            <h2 className="text-xl font-semibold text-white mb-1">
+            <h2 className="text-xl font-semibold text-slate-900 mb-1">
               @{account.username}
             </h2>
             <p className="text-xs text-slate-500">
@@ -107,7 +107,7 @@ export default function AccountDetailPage() {
           </div>
           <div className="flex flex-col items-end gap-3">
             <div className="text-right">
-              <div className="text-3xl font-bold text-white">
+              <div className="text-3xl font-bold text-slate-900">
                 {account.max_composite}
               </div>
               <div className="text-xs text-slate-500">Max Risk Score</div>
@@ -117,10 +117,10 @@ export default function AccountDetailPage() {
               disabled={confirmState !== "idle"}
               className={`text-xs px-3 py-1.5 rounded-lg font-medium transition-colors ${
                 confirmState === "done"
-                  ? "bg-green-700/40 text-green-300 cursor-default"
+                  ? "bg-green-100 text-green-700 cursor-default"
                   : confirmState === "loading"
-                  ? "bg-slate-700 text-slate-400 cursor-wait"
-                  : "bg-slate-700 hover:bg-slate-600 text-slate-200 cursor-pointer"
+                  ? "bg-slate-100 text-slate-400 cursor-wait"
+                  : "bg-slate-100 hover:bg-slate-200 text-slate-700 cursor-pointer"
               }`}
             >
               {confirmState === "done"
@@ -133,7 +133,7 @@ export default function AccountDetailPage() {
         </div>
 
         {/* Sub-score Breakdown */}
-        <div className="grid grid-cols-3 gap-4 mt-6 pt-4 border-t border-slate-700/50">
+        <div className="grid grid-cols-3 gap-4 mt-6 pt-4 border-t border-slate-100">
           <div className="text-center">
             <div className="text-2xl font-bold text-orange-400">
               {account.latest_composite}
@@ -154,7 +154,7 @@ export default function AccountDetailPage() {
           </div>
         </div>
 
-        <div className="mt-4 pt-4 border-t border-slate-700/50">
+        <div className="mt-4 pt-4 border-t border-slate-100">
           <div className="text-xs uppercase tracking-wide text-slate-500 mb-2">
             Latest modality scores
           </div>
@@ -163,7 +163,7 @@ export default function AccountDetailPage() {
               {latestModalityEntries.map(([modality, score]) => (
                 <div
                   key={modality}
-                  className="rounded-full border border-slate-600 bg-slate-900/50 px-3 py-1 text-xs text-slate-300"
+                  className="rounded-full border border-slate-200 bg-slate-50 px-3 py-1 text-xs text-slate-600"
                 >
                   {modalityLabel(modality)} {score}
                 </div>
@@ -180,8 +180,8 @@ export default function AccountDetailPage() {
       {/* Score Timeline Chart */}
       <ScoreChart scores={account.scores} />
 
-      <div className="bg-slate-800/50 rounded-xl p-5">
-        <h3 className="text-sm font-semibold text-slate-300 mb-4">
+      <div className="bg-white rounded-xl p-5 border border-slate-200 shadow-sm">
+        <h3 className="text-sm font-semibold text-slate-800 mb-4">
           Recent Observations
         </h3>
         <div className="space-y-3">
@@ -193,10 +193,10 @@ export default function AccountDetailPage() {
               return (
                 <div
                   key={score.timestamp}
-                  className="rounded-lg border border-slate-700/50 bg-slate-900/30 p-3"
+                  className="rounded-lg border border-slate-100 bg-slate-50/50 p-3"
                 >
                   <div className="flex items-center justify-between gap-4">
-                    <div className="text-sm text-slate-200">
+                    <div className="text-sm text-slate-700">
                       {new Date(score.timestamp).toLocaleString()}
                     </div>
                     <div className="text-xs text-slate-400">
