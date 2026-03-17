@@ -32,7 +32,10 @@ import {
   getSemanticTextModelHost,
   type SemanticScorerLike,
 } from "../semantic/semantic-host-client";
-import { hasUrgencySignal } from "./distress-phrases";
+import {
+  hasPassiveDeathIdeationSignal,
+  hasUrgencySignal,
+} from "./distress-phrases";
 import {
   mapSimilarityToRiskScore,
   similarityToConfidence,
@@ -69,6 +72,7 @@ interface TextScoreDebug {
   keywordScore: number;
   maxSimilarity?: number;
   minilmRan: boolean;
+  passiveDeathIdeationApplied?: boolean;
   scoringPath: TextScoringPath;
   semanticScore?: number;
   urgencyBoostApplied: boolean;
@@ -207,6 +211,8 @@ export class SemanticTextAnalyser implements Analyser {
 
     // ── Urgency detection ────────────────────────────────────────────────
     const hasUrgency = hasUrgencySignal(normalizedText);
+    const hasPassiveDeathIdeation =
+      hasPassiveDeathIdeationSignal(normalizedText);
 
     // ── ML semantic scoring ──────────────────────────────────────────────
     try {
@@ -223,8 +229,14 @@ export class SemanticTextAnalyser implements Analyser {
       // Blend semantic and keyword scores — semantic is primary
       const blended = Math.round(semanticScore * 0.65 + keywordScore * 0.35);
 
+      const passiveDeathIdeationScore = hasPassiveDeathIdeation
+        ? Math.max(blended, 72)
+        : blended;
+
       // Urgency bump: known time-critical phrases → floor at 75
-      const finalScore = hasUrgency ? Math.max(blended, 75) : blended;
+      const finalScore = hasUrgency
+        ? Math.max(passiveDeathIdeationScore, 75)
+        : passiveDeathIdeationScore;
 
       // Confidence: driven by similarity strength
       const confidence = similarityToConfidence(maxSimilarity);
@@ -234,6 +246,7 @@ export class SemanticTextAnalyser implements Analyser {
           keywordScore,
           maxSimilarity,
           minilmRan: true,
+          passiveDeathIdeationApplied: hasPassiveDeathIdeation,
           scoringPath: "minilm",
           semanticScore,
           urgencyBoostApplied: hasUrgency,
@@ -252,6 +265,7 @@ export class SemanticTextAnalyser implements Analyser {
         debug: {
           keywordScore,
           minilmRan: false,
+          passiveDeathIdeationApplied: false,
           scoringPath: "keyword-fallback-model-error",
           urgencyBoostApplied: false,
         },

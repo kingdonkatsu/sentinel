@@ -53,6 +53,7 @@ var __importStar = (this && this.__importStar) || (function () {
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.VisualEmotionAnalyser = void 0;
 const image_analyser_1 = require("../image-analyser");
+const visual_context_cues_1 = require("./visual-context-cues");
 const secure_cleanup_1 = require("../privacy/secure-cleanup");
 /**
  * Risk weights for each FER expression class.
@@ -118,30 +119,114 @@ class VisualEmotionAnalyser {
         const canvas = document.createElement("canvas");
         canvas.width = 224;
         canvas.height = 224;
+        let normalizedFrame = null;
         try {
             const heuristicScore = (0, image_analyser_1.analyseImage)(imageData);
+            normalizedFrame = this.normalizeToModelFrame(imageData, canvas);
+            const shadowHeuristic = (0, image_analyser_1.analyseImageDetailed)(normalizedFrame);
+            const shadowContextCues = (0, visual_context_cues_1.extractVisualContextCues)(normalizedFrame);
             // Attempt ML-based scoring
             const mlResult = await this.scoreWithFaceApi(imageData, canvas);
+            let activeScore = heuristicScore;
+            let activeConfidence = 0.3;
+            let activeStrategy = "heuristic";
             if (mlResult !== null) {
                 const mlWeight = mlResult.faceCount >= 2 ? 0.5 : 0.7;
                 const blendedScore = Math.round(mlResult.score * mlWeight + heuristicScore * (1 - mlWeight));
                 const blendedConfidence = Math.abs(mlResult.score - heuristicScore) >= 30
                     ? Math.max(0.55, mlResult.confidence - 0.1)
                     : mlResult.confidence;
-                return {
-                    score: blendedScore,
-                    confidence: blendedConfidence,
-                };
+                activeScore = blendedScore;
+                activeConfidence = blendedConfidence;
+                activeStrategy = "face-blend";
             }
-            // Fallback: colour histogram heuristic
+            const shadowScoreResult = mlResult !== null
+                ? (() => {
+                    const mlWeight = mlResult.faceCount >= 2 ? 0.5 : 0.7;
+                    const blendedScore = Math.round(mlResult.score * mlWeight +
+                        shadowHeuristic.score * (1 - mlWeight));
+                    const blendedConfidence = Math.abs(mlResult.score - shadowHeuristic.score) >= 30
+                        ? Math.max(0.55, mlResult.confidence - 0.1)
+                        : mlResult.confidence;
+                    return {
+                        ...(0, visual_context_cues_1.applyVisualContextCues)(blendedScore, blendedConfidence, shadowContextCues),
+                        strategy: "face-blend",
+                    };
+                })()
+                : {
+                    ...(0, visual_context_cues_1.applyVisualContextCues)(shadowHeuristic.score, 0.3, shadowContextCues),
+                    strategy: "heuristic",
+                };
+            const contextFlags = {
+                bloodLike: shadowContextCues.bloodLike,
+                pillLike: shadowContextCues.pillLike,
+                medicalSettingLike: shadowContextCues.medicalSettingLike,
+                injuryChaosLike: shadowContextCues.injuryChaosLike,
+            };
+            this.logShadowComparison({
+                active: {
+                    score: activeScore,
+                    confidence: activeConfidence,
+                    strategy: activeStrategy,
+                    heuristicScore,
+                },
+                shadow: {
+                    score: shadowScoreResult.score,
+                    confidence: shadowScoreResult.confidence,
+                    strategy: shadowScoreResult.strategy,
+                    heuristic: shadowHeuristic,
+                    contextCueScore: shadowContextCues.cueScore,
+                    contextReasons: shadowContextCues.reasons,
+                    contextFlags,
+                },
+                ml: {
+                    score: mlResult?.score ?? null,
+                    faceCount: mlResult?.faceCount ?? null,
+                },
+            });
             return {
-                score: heuristicScore,
-                confidence: 0.3,
+                score: activeScore,
+                confidence: activeConfidence,
+                shadowScore: shadowScoreResult.score,
+                shadowConfidence: shadowScoreResult.confidence,
+                shadowStrategy: shadowScoreResult.strategy,
+                shadowHeuristic,
+                shadowContextCueScore: shadowContextCues.cueScore,
+                shadowContextReasons: shadowContextCues.reasons,
+                shadowContextFlags: contextFlags,
+                faceCount: mlResult?.faceCount,
+                mlScore: mlResult?.score,
             };
         }
         finally {
+            if (normalizedFrame && normalizedFrame !== imageData) {
+                (0, secure_cleanup_1.zeroImageData)(normalizedFrame);
+            }
             (0, secure_cleanup_1.zeroImageData)(imageData);
             (0, secure_cleanup_1.destroyCanvas)(canvas);
+        }
+    }
+    normalizeToModelFrame(imageData, targetCanvas) {
+        if (imageData.width === 224 && imageData.height === 224) {
+            return imageData;
+        }
+        const sourceCanvas = document.createElement("canvas");
+        sourceCanvas.width = imageData.width;
+        sourceCanvas.height = imageData.height;
+        const sourceContext = sourceCanvas.getContext("2d");
+        const targetContext = targetCanvas.getContext("2d");
+        if (!sourceContext || !targetContext) {
+            sourceCanvas.remove();
+            return imageData;
+        }
+        try {
+            sourceContext.putImageData(imageData, 0, 0);
+            targetContext.clearRect(0, 0, 224, 224);
+            targetContext.drawImage(sourceCanvas, 0, 0, 224, 224);
+            return targetContext.getImageData(0, 0, 224, 224);
+        }
+        finally {
+            sourceCanvas.remove();
         }
     }
     async scoreWithFaceApi(imageData, canvas) {
@@ -197,6 +282,29 @@ class VisualEmotionAnalyser {
             available: false,
             inferenceTimeMs,
         };
+    }
+    logShadowComparison(payload) {
+        console.log("[Sentinel][Visual Shadow]", {
+            live: {
+                score: payload.active.score,
+                confidence: Number(payload.active.confidence.toFixed(3)),
+                strategy: payload.active.strategy,
+                heuristicScore: payload.active.heuristicScore,
+            },
+            shadow: {
+                score: payload.shadow.score,
+                confidence: Number(payload.shadow.confidence.toFixed(3)),
+                strategy: payload.shadow.strategy,
+                deltaFromLive: payload.shadow.score - payload.active.score,
+                heuristicTone: payload.shadow.heuristic.toneScore,
+                heuristicScene: payload.shadow.heuristic.sceneCueScore,
+                heuristicComposite: payload.shadow.heuristic.score,
+                contextCueScore: payload.shadow.contextCueScore,
+                contextReasons: payload.shadow.contextReasons,
+                contextFlags: payload.shadow.contextFlags,
+            },
+            ml: payload.ml,
+        });
     }
     dispose() {
         modelsLoaded = false;

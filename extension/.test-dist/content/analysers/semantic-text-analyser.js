@@ -135,6 +135,7 @@ class SemanticTextAnalyser {
         }
         // ── Urgency detection ────────────────────────────────────────────────
         const hasUrgency = (0, distress_phrases_1.hasUrgencySignal)(normalizedText);
+        const hasPassiveDeathIdeation = (0, distress_phrases_1.hasPassiveDeathIdeationSignal)(normalizedText);
         // ── ML semantic scoring ──────────────────────────────────────────────
         try {
             const semanticResult = await this.semanticScorer.scoreText(normalizedText, semantic_host_client_1.SEMANTIC_MODEL_TIMEOUT_MS);
@@ -144,8 +145,13 @@ class SemanticTextAnalyser {
             const semanticScore = (0, semantic_text_scoring_1.mapSimilarityToRiskScore)(maxSimilarity);
             // Blend semantic and keyword scores — semantic is primary
             const blended = Math.round(semanticScore * 0.65 + keywordScore * 0.35);
+            const passiveDeathIdeationScore = hasPassiveDeathIdeation
+                ? Math.max(blended, 72)
+                : blended;
             // Urgency bump: known time-critical phrases → floor at 75
-            const finalScore = hasUrgency ? Math.max(blended, 75) : blended;
+            const finalScore = hasUrgency
+                ? Math.max(passiveDeathIdeationScore, 75)
+                : passiveDeathIdeationScore;
             // Confidence: driven by similarity strength
             const confidence = (0, semantic_text_scoring_1.similarityToConfidence)(maxSimilarity);
             return {
@@ -153,6 +159,7 @@ class SemanticTextAnalyser {
                     keywordScore,
                     maxSimilarity,
                     minilmRan: true,
+                    passiveDeathIdeationApplied: hasPassiveDeathIdeation,
                     scoringPath: "minilm",
                     semanticScore,
                     urgencyBoostApplied: hasUrgency,
@@ -166,6 +173,7 @@ class SemanticTextAnalyser {
                 debug: {
                     keywordScore,
                     minilmRan: false,
+                    passiveDeathIdeationApplied: false,
                     scoringPath: "keyword-fallback-model-error",
                     urgencyBoostApplied: false,
                 },

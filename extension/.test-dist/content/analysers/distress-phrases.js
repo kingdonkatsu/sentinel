@@ -11,8 +11,9 @@
  * maximum-similarity score reflects the closest match rather than an average.
  */
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.URGENCY_PATTERNS = exports.ALL_DISTRESS_PHRASES = exports.DISTRESS_PHRASES_DISSOCIATION = exports.DISTRESS_PHRASES_SUBTLE = exports.DISTRESS_PHRASES_MILD = exports.DISTRESS_PHRASES_MODERATE = exports.DISTRESS_PHRASES_HIGH = exports.DISTRESS_PHRASES_SEVERE = void 0;
+exports.PASSIVE_DEATH_IDEATION_PATTERNS = exports.URGENCY_PATTERNS = exports.ALL_DISTRESS_PHRASES = exports.DISTRESS_PHRASES_DISSOCIATION = exports.DISTRESS_PHRASES_SUBTLE = exports.DISTRESS_PHRASES_MILD = exports.DISTRESS_PHRASES_MODERATE = exports.DISTRESS_PHRASES_HIGH = exports.DISTRESS_PHRASES_SEVERE = void 0;
 exports.hasUrgencySignal = hasUrgencySignal;
+exports.hasPassiveDeathIdeationSignal = hasPassiveDeathIdeationSignal;
 // Tier 1 — Suicidal ideation / self-harm
 exports.DISTRESS_PHRASES_SEVERE = [
     "I want to kill myself",
@@ -32,6 +33,8 @@ exports.DISTRESS_PHRASES_HIGH = [
     "Nothing will ever get better",
     "I'm trapped and there's no way out",
     "I'm so exhausted I can't go on",
+    "I'm just so tired of life",
+    "I'm tired of living",
     "I feel empty inside all the time",
     "I've given up on everything",
     "I'm worthless and a burden to everyone",
@@ -119,6 +122,14 @@ exports.URGENCY_PATTERNS = [
     /\blast message\b/i,
     /\btoday\b.*(?:end it|end everything|stop the pain|done with (?:life|everything|this world))/i,
 ];
+exports.PASSIVE_DEATH_IDEATION_PATTERNS = [
+    /\btired of life\b/i,
+    /\btired of living\b/i,
+    /\bdone with life\b/i,
+];
 function hasUrgencySignal(text) {
     return exports.URGENCY_PATTERNS.some((pattern) => pattern.test(text));
+}
+function hasPassiveDeathIdeationSignal(text) {
+    return exports.PASSIVE_DEATH_IDEATION_PATTERNS.some((pattern) => pattern.test(text));
 }

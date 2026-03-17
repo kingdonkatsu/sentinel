@@ -30,6 +30,8 @@ export const DISTRESS_PHRASES_HIGH = [
   "Nothing will ever get better",
   "I'm trapped and there's no way out",
   "I'm so exhausted I can't go on",
+  "I'm just so tired of life",
+  "I'm tired of living",
   "I feel empty inside all the time",
   "I've given up on everything",
   "I'm worthless and a burden to everyone",
@@ -124,6 +126,16 @@ export const URGENCY_PATTERNS = [
   /\btoday\b.*(?:end it|end everything|stop the pain|done with (?:life|everything|this world))/i,
 ] as const;
 
+export const PASSIVE_DEATH_IDEATION_PATTERNS = [
+  /\btired of life\b/i,
+  /\btired of living\b/i,
+  /\bdone with life\b/i,
+] as const;
+
 export function hasUrgencySignal(text: string): boolean {
   return URGENCY_PATTERNS.some((pattern) => pattern.test(text));
+}
+
+export function hasPassiveDeathIdeationSignal(text: string): boolean {
+  return PASSIVE_DEATH_IDEATION_PATTERNS.some((pattern) => pattern.test(text));
 }

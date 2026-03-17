@@ -58,7 +58,13 @@ class CompositeScorer {
             composite += r.score * (effectiveWeights[r.modality] ?? 0);
         }
         // Step 4: confidence dampening — low overall confidence pulls toward 50
-        const overallConfidence = available.reduce((sum, r) => sum + r.confidence, 0) / available.length;
+        const contributing = available.filter((r) => (effectiveWeights[r.modality] ?? 0) > 0);
+        const overallConfidence = contributing.length === 0
+            ? 0
+            : contributing.reduce((sum, r) => {
+                const weight = effectiveWeights[r.modality] ?? 0;
+                return sum + r.confidence * weight;
+            }, 0);
         if (overallConfidence < 0.5) {
             const midpointPull = 0.5 + overallConfidence;
             composite = 50 + (composite - 50) * midpointPull;

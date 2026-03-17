@@ -152,14 +152,15 @@ function updateWeightDisplay() {
   const imageWeight = parseInt(imageWeightInput.value, 10);
   const textWeight = 100 - imageWeight;
 
-  imageWeightValue.textContent = `${imageWeight}%`;
-  textWeightValue.textContent = `${textWeight}%`;
+  imageWeightValue.textContent = `${imageWeight}% IMG`;
+  textWeightValue.textContent = `${textWeight}% TXT`;
 }
 
 function showStatus(message: string, isError = false) {
   statusEl.textContent = message;
   statusEl.style.display = "block";
-  statusEl.classList.toggle("error", isError);
+  statusEl.classList.remove("success", "error");
+  statusEl.classList.add(isError ? "error" : "success");
 }
 
 function showRuntimeError(prefix: string, error: unknown) {

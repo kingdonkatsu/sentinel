@@ -15,6 +15,7 @@ const DISTRESS_KEYWORDS = {
     suicide: -5, kill: -5, die: -5, dead: -5, "end it": -5, overdose: -5,
     worthless: -4, hopeless: -4, "give up": -4, "no point": -4, cutting: -4,
     "self harm": -4, "self-harm": -4, "want to disappear": -4,
+    "tired of life": -4, "tired of living": -4, "done with life": -4,
     // Moderate distress
     depressed: -3, anxiety: -3, crying: -3, lonely: -3, scared: -3,
     hate: -3, hurting: -3, numb: -3, broken: -3, trapped: -3,

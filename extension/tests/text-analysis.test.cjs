@@ -11,10 +11,15 @@ const {
 } = require("../.test-dist/content/analysers/semantic-text-analyser.js");
 const {
   hasUrgencySignal,
+  hasPassiveDeathIdeationSignal,
 } = require("../.test-dist/content/analysers/distress-phrases.js");
 const {
   similarityToConfidence,
 } = require("../.test-dist/content/analysers/semantic-text-scoring.js");
+const {
+  BASE_WEIGHTS,
+  CompositeScorer,
+} = require("../.test-dist/content/scoring/composite-scorer.js");
 
 test("keyword analysis uses word and phrase boundaries", () => {
   assert.equal(analyseText("skill issue"), 50);
@@ -28,6 +33,12 @@ test("keyword analysis uses word and phrase boundaries", () => {
 test("urgency patterns avoid broad today-done matches", () => {
   assert.equal(hasUrgencySignal("today I'm done with my homework"), false);
   assert.equal(hasUrgencySignal("I'm going to end it tonight"), true);
+});
+
+test("passive death-ideation patterns catch tired-of-life phrasing without broad false positives", () => {
+  assert.equal(hasPassiveDeathIdeationSignal("im just so tired of life"), true);
+  assert.equal(hasPassiveDeathIdeationSignal("I'm tired of living"), true);
+  assert.equal(hasPassiveDeathIdeationSignal("I'm done with my homework"), false);
 });
 
 test("semantic confidence is continuous across similarity values", () => {
@@ -220,6 +231,7 @@ test("dissociation multi-word patterns score above neutral on keyword path", () 
   assert.ok(analyseText("i don't feel real anymore") > 50, "don't feel real should score above neutral");
   assert.ok(analyseText("fading away from everyone") > 50, "fading away should score above neutral");
   assert.ok(analyseText("already a ghost") > 50, "already a ghost should score above neutral");
+  assert.ok(analyseText("im just so tired of life") >= 65, "tired of life should score above mild distress");
 });
 
 test("dissociation single-word slang does not trigger false positives on keyword path", () => {
@@ -232,4 +244,47 @@ test("dissociation single-word slang does not trigger false positives on keyword
 test("positive caption stays at or below 55 on keyword path", () => {
   assert.ok(analyseText("Morning grind. No days off!") <= 55, "positive caption should not score high");
   assert.ok(analyseText("best day ever so grateful") <= 50, "positive caption should score neutral or below");
+});
+
+test("semantic text analyser floors passive death-ideation above low-60s outputs", async () => {
+  const analyser = new SemanticTextAnalyser({
+    ocrRunner: {
+      async recognizeViewer() {
+        return {
+          status: "ok",
+          text: "im just so tired of life",
+          latencyMs: 84,
+          confidence: 88,
+          strategy: "lower-band-binary",
+        };
+      },
+    },
+    semanticScorer: {
+      dispose() {},
+      async scoreText() {
+        return { maxSimilarity: 0.645 };
+      },
+    },
+  });
+
+  const result = await analyser.analyse({});
+
+  assert.equal(result.available, true);
+  assert.equal(result.status, "ok");
+  assert.ok(result.score >= 72, `expected passive death-ideation floor, got ${result.score}`);
+});
+
+test("composite scorer excludes zero-weight modalities from overall confidence", () => {
+  const scorer = new CompositeScorer();
+  const result = scorer.fuse(
+    [
+      { modality: "text", score: 61, confidence: 0.776, available: true, inferenceTimeMs: 0 },
+      { modality: "temporal", score: 50, confidence: 0, available: true, inferenceTimeMs: 0 },
+      { modality: "metadata", score: 50, confidence: 0.5, available: true, inferenceTimeMs: 0 },
+    ],
+    BASE_WEIGHTS
+  );
+
+  assert.ok(result.overallConfidence > 0.7, `expected contributing-modality confidence, got ${result.overallConfidence}`);
+  assert.equal(result.composite, 60);
 });
