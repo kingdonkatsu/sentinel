@@ -1,494 +1,276 @@
-# Sentinel - Development Notes
+# Sentinel Engineering Handoff
 
-**Last Updated:** March 6, 2026
-**Status:** Live - Multi-modal AI pipeline implemented (Phases 1-3 complete), all models downloaded
-**Built By:** Claude (Opus 4.6) with Senior Software Engineer at Singapore Social Enterprise
+Last updated: March 17, 2026
 
----
+This file is the maintainer-facing reference for the current Sentinel codebase. It replaces the old hackathon notes with an operator and engineering handoff that matches what is actually implemented in the repo.
 
-## What Is Sentinel?
+## System Summary
 
-A privacy-first mental health detection tool for youth social workers. Monitors Instagram Stories in real-time via Chrome extension, scores content for emotional distress using in-browser ML inference, and surfaces prioritized cases on a worker dashboard.
+Sentinel is a three-part product for triaging potentially concerning Instagram Stories viewed by youth workers:
 
-**Core Innovation:** Story content (images, text, video) is scored in-browser and immediately discarded. Only numerical scores + Instagram usernames are sent to backend. Zero raw content storage.
+1. A Chrome extension performs in-browser analysis.
+2. A FastAPI service ingests and ranks score events in Redis.
+3. A Next.js dashboard surfaces the live queue and account detail views.
 
----
+The privacy model implemented in code is:
 
-## Architecture Overview
+- Raw story media is analysed in the browser.
+- Numeric scores and the Instagram username are sent to the backend.
+- Score records and account summaries expire from Redis after 24 hours.
 
-### Three Components
+Important clarification: the backend currently stores raw usernames. The system does not yet hash or pseudonymise them before storage.
 
-1. **Chrome Extension** (TypeScript, Manifest V3)
-   - Detects Instagram Stories via MutationObserver
-   - Runs 5-modality ML analysis pipeline entirely in-browser
-   - Shows HIGH RISK overlay with modality breakdown on concerning Stories
-   - Sends only: username + scores + timestamp + per-modality scores to backend
-   - Polls backend for confirmed cases to calibrate analysis weights
+## Current Build State
 
-2. **Backend API** (Python FastAPI + Redis)
-   - Receives anonymized scores (including optional per-modality breakdown)
-   - Ranks accounts by severity in Redis sorted set
-   - Auto-purges all data after 24h (GDPR compliant)
-   - Generates AI conversation starters via OpenAI
-   - Streams real-time updates via SSE
-   - Stores confirmation events for calibration feedback loop
+### Verified
 
-3. **Worker Dashboard** (Next.js 14 + Tailwind)
-   - Priority queue ranked by max risk score
-   - Real-time updates via Server-Sent Events
-   - Account detail with score timeline charts
-   - AI-suggested outreach messages
-   - Local-only case notes
-   - Confirm Case button to feed calibration signal back to extension
+- Backend routes for health, score ingest, dashboard views, confirmations, SSE, and outreach suggestions.
+- Redis-backed ranking and 24-hour expiry.
+- Dashboard queue, account detail, notes panel, outreach card, and confirm workflow.
+- Extension scoring pipeline with OCR, semantic text scoring, visual scoring, temporal analysis, metadata analysis, and video sampling.
+- 15 backend integration tests and 28 extension unit tests are present in the repo.
 
----
+### Not yet production-safe
 
-## Current Status
+- API auth is a shared header key.
+- Dashboard confirm requests use a public browser environment variable.
+- CORS is fully open.
+- Extension behaviour on live Instagram still needs field validation.
+- Build and deployment workflows still contain hackathon shortcuts.
 
-### ✅ Fully Working
-- Backend API (13 integration tests passing; live OpenAI still requires `OPENAI_API_KEY` for manual verification)
-- Redis data storage with 24h TTL
-- Worker dashboard with real-time updates and Confirm Case button
-- AI outreach generation (OpenAI + offline fallback)
-- Multi-modal analysis pipeline (code complete)
-- Calibration feedback loop (extension ↔ backend ↔ dashboard)
+## Architecture
 
-### ⚠️ Requires Setup
-- Chrome extension (compiles cleanly, not tested on Instagram)
-- Instagram Story detection (DOM selectors may need adjustment)
-- Image/video capture (likely blocked by CORS — visual emotion falls back to colour histogram)
-- Story scoring still needs debugging; results are inconsistent and can collapse to the same score across different stories or users
-
-### 🔴 Known Limitations
-- Extension won't work on Instagram without testing/debugging DOM selectors
-- Scoring is not production-ready yet; repeated identical composites still appear after the first analysed story in some runs
-- ML models not bundled (must be downloaded separately — ~13MB)
-- Audio modality intentionally skipped (Instagram CORS blocks audio streams; visual catches same signals)
-- Simple API key auth (not JWT)
-
----
-
-## Tech Stack
-
-| Component | Technology |
-|-----------|-----------|
-| Extension | TypeScript + Vite + Manifest V3 |
-| Visual Scoring | face-api.js TinyFaceDetector + FaceExpressionNet (vladmandic fork) |
-| Text Scoring | MiniLM-L6-v2 sentence embeddings via Transformers.js (ONNX int8) |
-| Temporal Scoring | Ring buffer heuristics (no model) |
-| Video Scoring | Multi-frame sampling via visual emotion model |
-| Metadata Scoring | DOM scraping (no model) |
-| Score Fusion | Confidence-weighted Bayesian fusion with critical signal override |
-| Weight Calibration | Social worker confirmation feedback loop |
-| Backend | FastAPI (Python 3.12) + Redis 7 |
-| Dashboard | Next.js 14 + Tailwind + shadcn/ui |
-| Real-time | Server-Sent Events (SSE) |
-| AI Outreach | OpenAI GPT-4o-mini |
-| Infrastructure | Docker Compose |
-
----
-
-## ML Models
-
-All models run **entirely in-browser** (TF.js + Transformers.js). No content leaves the device for inference.
-
-| Model | File Location | Size | Status |
-|-------|--------------|------|--------|
-| face-api.js TinyFaceDetector | `extension/public/models/faceapi/tiny_face_detector_model-*` | ~190KB | ✅ Downloaded |
-| face-api.js FaceExpressionNet | `extension/public/models/faceapi/face_expression_model-*` | ~330KB | ✅ Downloaded |
-| MiniLM-L6-v2 (ONNX int8) | `extension/public/models/Xenova/all-MiniLM-L6-v2/` | ~6MB | ✅ Downloaded |
-| Distress phrase vectors | Auto-computed on first load | ~300KB cached | ✅ Auto |
-
-**Total model size: ~6.5MB** (well under 30MB budget)
-
-### Notes
-- SHA-256 hashes for face-api.js shards are stored in `extension/src/content/models/model-hashes.ts`
-- To re-download, follow `extension/public/models/README.md`
-
-### Backend Selection (Auto)
-Extension tries: **WebGPU → WebGL → WASM → CPU** (fastest available on user's device)
-
-### Loading Strategy
-- Lazy-loaded on first analysis (not on install)
-- Cached in extension-origin IndexedDB
-- Unloaded after 60s inactivity
-- Force-unloaded if JS heap > 500MB
-
----
-
-## Analysis Pipeline
-
-### 5 Active Modalities (each produces score 0-100 + confidence 0.0-1.0)
-
-| Modality | Model | Fallback | Base Weight |
-|----------|-------|---------|-------------|
-| **Text** (semantic) | MiniLM-L6 cosine similarity vs 50 distress phrases | Keyword matching (60+ terms) | 35% |
-| **Visual** (emotion) | face-api.js TinyFaceDetector + FaceExpressionNet 7-class | Colour histogram | 25% |
-| **Temporal** (patterns) | Ring buffer heuristics | Always available | 20% |
-| **Video** (frames) | 3-frame sampling via visual model | Single frame | 15% |
-| **Metadata** (context) | DOM scraping (close-friends, reply-disabled, late-night) | N/A | 5% |
-
-*Audio modality (YAMNet) intentionally excluded — Instagram CORS blocks streams; visual covers same signals.*
-
-### Fusion Algorithm
-1. **Effective weight** = base_weight × confidence × availability
-2. **Normalize** weights to sum to 1.0
-3. **Weighted composite** = Σ(score × norm_weight)
-4. **Confidence dampening:** if overall_confidence < 0.5 → pull toward midpoint
-5. **Critical override:** if any modality has score ≥ 90 AND confidence ≥ 0.8 → floor composite at 75
-
-### Weight Calibration
-- When a social worker confirms a case on dashboard → signal flows to extension
-- Extension nudges modality weights: `w_i = w_i × (1 + 0.1 × (accuracy_i - 0.5))` (max ±5%)
-- Stored in `chrome.storage.session`; resets every 7 days
-
----
-
-## How to Run (Development)
-
-### Prerequisites
-- Docker Desktop (for Redis)
-- Python 3.12 + pip
-- Node.js 20 + npm
-- Chrome browser (for extension testing)
-- ML model files (see [Models section](#ml-models))
-
-### Quick Start
-
-```bash
-# 1. Start Redis
-docker compose up -d redis
-
-# 2. Start Backend (local dev mode)
-cd backend
-python3 -m venv .venv
-source .venv/bin/activate
-pip install -r requirements.txt
-uvicorn app.main:app --reload
-
-# 3. Start Dashboard
-cd ../dashboard
-npm install
-npm run dev
-
-# 4. Load Extension in Chrome
-cd ../extension
-npm install
-npm run build
-# Load dist/ folder in chrome://extensions (Developer Mode)
-# Set API URL to http://localhost:8000 and API Key to value in backend/.env
+```text
+Instagram Story
+  -> Chrome extension content script
+  -> local modality analysers
+  -> composite score + modality scores
+  -> FastAPI / Redis
+  -> dashboard REST + SSE consumers
 ```
-
-**Access:**
-- Backend API: http://localhost:8000/docs (Swagger UI)
-- Dashboard: http://localhost:3000/dashboard
-
----
-
-## Project Structure
-
-```
-sentinel/
-├── extension/              # Chrome Extension (Manifest V3)
-│   ├── src/
-│   │   ├── content/
-│   │   │   ├── analysers/            # Per-modality analysers
-│   │   │   │   ├── visual-emotion-analyser.ts   (BlazeFace + MobileNetV2)
-│   │   │   │   ├── semantic-text-analyser.ts    (MiniLM + cosine similarity)
-│   │   │   │   ├── temporal-analyser.ts         (ring buffer patterns)
-│   │   │   │   ├── video-analyser.ts            (3-frame sampling)
-│   │   │   │   ├── metadata-analyser.ts         (DOM scraping)
-│   │   │   │   └── distress-phrases.ts          (50 reference phrases, 5 tiers)
-│   │   │   ├── models/
-│   │   │   │   ├── model-manager.ts             (TF.js + Transformers.js lifecycle)
-│   │   │   │   └── model-hashes.ts              (SHA-256 integrity constants)
-│   │   │   ├── scoring/
-│   │   │   │   ├── composite-scorer.ts          (Bayesian fusion engine)
-│   │   │   │   └── weight-calibrator.ts         (feedback loop weights)
-│   │   │   ├── privacy/
-│   │   │   │   ├── secure-cleanup.ts            (pixel zeroing, tensor disposal)
-│   │   │   │   └── memory-monitor.ts            (500MB heap guard)
-│   │   │   ├── analysis-pipeline.ts             (orchestrates all modalities)
-│   │   │   ├── story-detector.ts
-│   │   │   ├── image-analyser.ts                (colour histogram fallback)
-│   │   │   ├── text-analyser.ts                 (keyword fast-path)
-│   │   │   ├── overlay-renderer.ts              (risk overlay + modality chips)
-│   │   │   └── score-transmitter.ts
-│   │   ├── background/
-│   │   │   └── service-worker.ts                (chrome.alarms, confirmation polling)
-│   │   ├── popup/         # Extension config UI
-│   │   └── shared/
-│   │       └── types.ts   # ModalityType, ModalityResult, RiskScoreV2, etc.
-│   └── public/
-│       ├── manifest.json
-│       └── models/        # ML model files (download separately)
-│           └── README.md  # Download instructions
-│
-├── backend/               # FastAPI Backend
-│   ├── app/
-│   │   ├── main.py       # API routes + SSE endpoint
-│   │   ├── models.py     # Pydantic schemas (incl. ConfirmationEntry)
-│   │   ├── services/     # Score + outreach services
-│   │   └── tasks/        # Background cleanup
-│   └── scripts/
-│       └── # Removed demo seeding scripts
-│
-├── dashboard/             # Next.js Dashboard
-│   ├── src/
-│   │   ├── app/          # App Router pages (incl. Confirm Case button)
-│   │   ├── components/   # Priority table, charts, outreach cards
-│   │   └── lib/          # API client (incl. confirmCase())
-│   └── public/
-│
-└── docker-compose.yml     # Redis + API + Dashboard orchestration
-```
-
----
-
-## API Endpoints
-
-| Method | Endpoint | Auth | Description |
-|--------|----------|------|-------------|
-| POST | `/api/v1/scores` | API key | Submit score from extension (incl. optional modality_scores) |
-| GET | `/api/v1/dashboard` | None | Get prioritized account list |
-| GET | `/api/v1/dashboard/{username}` | None | Get account detail + score history |
-| GET | `/api/v1/scores/feed` | None | SSE stream for real-time updates |
-| POST | `/api/v1/outreach/suggest` | None | Generate AI conversation starters (`X-Sentinel-Outreach-Provider: openai|fallback`) |
-| POST | `/api/v1/accounts/{username}/confirm` | API key | Record social worker confirmation (calibration) |
-| GET | `/api/v1/confirmations` | API key | Get confirmations since timestamp (?since=ms_epoch) |
-| GET | `/api/v1/health` | None | Health check |
-
----
-
-## Data Model (Redis)
-
-```
-# Individual scores (auto-expire 24h)
-score:{username}:{timestamp} → Hash {composite, text, image, timestamp,
-                                      modality_scores (JSON, optional)}
-
-# Score history per account
-scores_list:{username} → Sorted Set (timestamp → timestamp)
-
-# Account summary
-account:{username} → Hash {username, latest_composite, latest_text,
-                           latest_image, last_seen, score_count,
-                           latest_modality_scores (JSON, optional)}
-
-# Priority ranking
-priority_index → Sorted Set (username → max_composite)
-
-# Real-time stream
-stream:scores → Redis Stream (maxlen 1000)
-
-# Confirmed cases index
-confirmations → Sorted Set (username:timestamp → timestamp_ms)
-
-# Individual confirmation records
-confirmation:{username}:{timestamp_ms} → Hash {username, modality_scores (JSON), timestamp}
-```
-
-All keys have 24-hour TTL. `priority_index` cleaned by background task.
-
----
-
-## Privacy Architecture
-
-### Content Lifecycle (Core Invariant)
-```
-DOM element detected → Canvas draws frame (temp <canvas>) → ImageData extracted (JS heap)
-→ Model inference (tensor created, scored, disposed) → Canvas removed → ImageData zeroed
-→ ONLY numerical scores remain → Scores sent to backend
-```
-
-### Explicit Cleanup After Every Analysis
-```typescript
-imageData.data.fill(0);   // Zero pixel buffer
-tensor.dispose();         // Free GPU/CPU tensor memory
-text = null;              // Release string reference
-canvas.remove();          // Remove DOM element
-```
-
-### What Is Stored in Backend
-- Instagram username
-- Numerical risk scores (0-100)
-- Per-modality score breakdown (integers only)
-- Timestamps
-- TTL: 24 hours
-
-### What Is NEVER Stored Anywhere
-- Story images, videos, or pixels
-- Story text content
-- Model embeddings or feature vectors
-- Raw audio
-
-### Model Security
-- All models bundled at build time (no runtime CDN downloads)
-- SHA-256 hash verification on first load
-- Inference-only: no `tf.train`, no gradient computation
-- CSP restricts to `'self' 'wasm-unsafe-eval'`
-
----
-
-## Testing Checklist
-
-### Backend
-- [x] API health check
-- [x] Submit score payload
-- [x] Submit score with modality_scores
-- [x] Retrieve dashboard data
-- [x] Account detail view
-- [x] SSE stream connects
-- [x] AI outreach generation
-- [x] Outreach provider header (`openai|fallback`)
-- [x] 24h TTL purge (Redis EXPIRE)
-- [x] Confirm case endpoint
-- [x] Get confirmations endpoint
-
-### Dashboard
-- [x] Priority queue displays
-- [x] Real-time updates work
-- [x] Account detail loads
-- [x] Charts render correctly
-- [x] Outreach card generates
-- [x] Case notes save locally
-- [x] Confirm Case button
 
 ### Extension
-- [ ] Loads in Chrome
-- [ ] Detects Instagram Stories
-- [ ] ML models load (face-api.js + MiniLM downloaded)
-- [ ] Scores content correctly
-- [ ] Overlay appears with modality breakdown
-- [ ] Backend receives scores + modality breakdown
-- [ ] Calibration confirmation polling works
 
----
+Primary entry points:
 
-## AI Backend Verification
+- [`extension/src/content/main.ts`](/Users/poonj/Library/CloudStorage/OneDrive-Personal/sentinel/extension/src/content/main.ts)
+- [`extension/src/content/analysis-pipeline.ts`](/Users/poonj/Library/CloudStorage/OneDrive-Personal/sentinel/extension/src/content/analysis-pipeline.ts)
+- [`extension/src/background/service-worker.ts`](/Users/poonj/Library/CloudStorage/OneDrive-Personal/sentinel/extension/src/background/service-worker.ts)
+- [`extension/src/popup/popup.ts`](/Users/poonj/Library/CloudStorage/OneDrive-Personal/sentinel/extension/src/popup/popup.ts)
 
-### Automated
-- Start Redis with `docker compose up -d redis`
-- Run backend tests with `cd backend && pytest tests -q -p no:cacheprovider`
-- Current automated coverage includes score ingestion, dashboard/detail retrieval, SSE, confirm flow, confirmation polling, fallback outreach, mocked OpenAI success, and OpenAI failure fallback logging
+Implemented modalities:
 
-### Manual Fallback Check
-- Leave `OPENAI_API_KEY` blank in `backend/.env`
-- Start the backend and call `POST /api/v1/outreach/suggest`
-- Expect the response header `X-Sentinel-Outreach-Provider: fallback`
+- `text`: OCR via story OCR + keyword logic + MiniLM semantic similarity
+- `visual`: face-api.js facial expression scoring blended with heuristic image scoring
+- `temporal`: per-account short-term pattern analysis
+- `video`: multi-frame sampling for video Stories
+- `metadata`: DOM-derived platform cues
 
-### Manual Live OpenAI Check
-- Set `OPENAI_API_KEY=sk-...` in `backend/.env`
-- Restart `uvicorn`
-- Call `POST /api/v1/outreach/suggest`
-- Expect the response header `X-Sentinel-Outreach-Provider: openai`
-- Hard-refresh the dashboard account page before re-checking outreach suggestions because the card caches for 5 minutes
+Key extension behaviours:
 
----
+- Loads model assets from `extension/public/models`
+- Sends only scores and metadata to the backend
+- Polls `/api/v1/confirmations` every minute
+- Lets the worker configure API URL, API key, threshold, and image/text weighting in the popup
 
-## Important Configuration
+### Backend
 
-### Extension Popup Settings
-- API URL: `http://localhost:8000`
-- API Key: `sentinel-hackathon-key` (default)
-- Risk Threshold: 70 (adjustable 30-95)
-- Base weights: text=35% / visual=25% / temporal=20% / video=15% / metadata=5% (auto-calibrated)
+Primary entry points:
 
-### Environment Variables
+- [`backend/app/main.py`](/Users/poonj/Library/CloudStorage/OneDrive-Personal/sentinel/backend/app/main.py)
+- [`backend/app/services/score_service.py`](/Users/poonj/Library/CloudStorage/OneDrive-Personal/sentinel/backend/app/services/score_service.py)
+- [`backend/app/services/outreach_service.py`](/Users/poonj/Library/CloudStorage/OneDrive-Personal/sentinel/backend/app/services/outreach_service.py)
+- [`backend/app/models.py`](/Users/poonj/Library/CloudStorage/OneDrive-Personal/sentinel/backend/app/models.py)
 
-**Backend (.env):**
+Redis storage model:
+
+- `score:{username}:{timestamp}`: per-score hash
+- `scores_list:{username}`: sorted set of timestamps
+- `account:{username}`: latest account summary
+- `priority_index`: max composite score per username
+- `stream:scores`: SSE event stream
+- `confirmation:{username}:{timestamp}` and `confirmations`: confirmation storage and index
+
+Expiry policy:
+
+- Scores, account summaries, and confirmations are set to 24 hours.
+- Queue ordering is driven by the highest composite score seen for the account.
+
+### Dashboard
+
+Primary entry points:
+
+- [`dashboard/src/app/dashboard/page.tsx`](/Users/poonj/Library/CloudStorage/OneDrive-Personal/sentinel/dashboard/src/app/dashboard/page.tsx)
+- [`dashboard/src/app/dashboard/[username]/page.tsx`](/Users/poonj/Library/CloudStorage/OneDrive-Personal/sentinel/dashboard/src/app/dashboard/[username]/page.tsx)
+- [`dashboard/src/components/priority-table.tsx`](/Users/poonj/Library/CloudStorage/OneDrive-Personal/sentinel/dashboard/src/components/priority-table.tsx)
+- [`dashboard/src/components/outreach-card.tsx`](/Users/poonj/Library/CloudStorage/OneDrive-Personal/sentinel/dashboard/src/components/outreach-card.tsx)
+- [`dashboard/src/lib/api.ts`](/Users/poonj/Library/CloudStorage/OneDrive-Personal/sentinel/dashboard/src/lib/api.ts)
+
+Implemented UX:
+
+- Queue page with live connectivity indicator
+- Account detail page with latest scores and historical observations
+- Confirm case action
+- Outreach suggestion card
+- Local notes panel
+
+## Runtime Configuration
+
+### Backend environment
+
+Defined in [`backend/app/config.py`](/Users/poonj/Library/CloudStorage/OneDrive-Personal/sentinel/backend/app/config.py):
+
+- `REDIS_URL`
+- `API_KEY`
+- `DASHBOARD_URL`
+- `OPENAI_API_KEY`
+
+Defaults still include hackathon-safe values. Override them in every non-local environment.
+
+### Dashboard environment
+
+- `NEXT_PUBLIC_API_URL`
+- `NEXT_PUBLIC_API_KEY`
+
+The second variable is used client-side for case confirmation. That is convenient for demos and wrong for a real deployment.
+
+### Extension configuration
+
+Persisted in Chrome storage:
+
+- `sentinel_api_url`
+- `sentinel_api_key`
+- `sentinel_threshold`
+- `sentinel_weights`
+
+The default config still points to `http://localhost:8000` and uses `sentinel-hackathon-key`.
+
+## API Contract
+
+Implemented routes in [`backend/app/main.py`](/Users/poonj/Library/CloudStorage/OneDrive-Personal/sentinel/backend/app/main.py):
+
+| Method | Endpoint | Auth | Notes |
+| --- | --- | --- | --- |
+| `POST` | `/api/v1/scores` | `X-Sentinel-Key` | Accepts username, composite score, optional text/image scores, timestamp, optional modality map |
+| `GET` | `/api/v1/dashboard` | None | Ranked account list |
+| `GET` | `/api/v1/dashboard/{username}` | None | Full score history for an account |
+| `GET` | `/api/v1/scores/feed` | None | Redis stream exposed as SSE |
+| `POST` | `/api/v1/outreach/suggest` | None | Uses OpenAI or fallback suggestions |
+| `POST` | `/api/v1/accounts/{username}/confirm` | `X-Sentinel-Key` | Records calibration confirmation |
+| `GET` | `/api/v1/confirmations` | `X-Sentinel-Key` | Poll endpoint for the extension |
+| `GET` | `/api/v1/health` | None | Basic health check |
+
+## Test And Build Commands
+
+### Backend
+
+```bash
+docker compose up -d redis
+cd backend
+pytest tests -q -p no:cacheprovider
 ```
-REDIS_URL=redis://localhost:6379/0
-API_KEY=sentinel-hackathon-key
-OPENAI_API_KEY=sk-your-key-here
-DASHBOARD_URL=http://localhost:3000
+
+### Extension
+
+```bash
+cd extension
+npm run test:unit
+npm run build
 ```
 
-If `OPENAI_API_KEY` is blank, the outreach endpoint still works but returns the offline fallback copy and `X-Sentinel-Outreach-Provider: fallback`.
+### Dashboard
 
-**Dashboard (.env.local):**
+```bash
+cd dashboard
+npm run build
 ```
-NEXT_PUBLIC_API_URL=http://localhost:8000
-NEXT_PUBLIC_API_KEY=sentinel-hackathon-key
-```
 
----
+## Operational Hazards
 
-## Known Issues & Workarounds
+### Redis flush during extension build
 
-### Issue: ML Model Files Missing
-**Why:** ~13MB of model binaries not committed to git
-**Fix:** Follow `extension/public/models/README.md` to download BlazeFace, MobileNetV2, and MiniLM-L6 files
-**Fallback:** Pipeline falls back to colour histogram + keyword matching automatically
+[`extension/package.json`](/Users/poonj/Library/CloudStorage/OneDrive-Personal/sentinel/extension/package.json) runs `node ./scripts/flush-redis.mjs` after the raw build. That script executes `FLUSHDB` against the Redis instance defined by `REDIS_URL` or `backend/.env`.
 
-### Issue: Instagram Story Detection May Fail
-**Why:** Instagram frequently changes DOM structure
-**Fix:** Use Demo Mode as fallback; inspect current DOM and update selectors in `story-detector.ts`
+Treat this as local-only behaviour. Do not run it against shared, staging, or production Redis.
 
-### Issue: CORS Blocks Image/Video Capture
-**Why:** Instagram serves media from CDN with CORS protection
-**Workaround:** Visual emotion analyser falls back to colour histogram (confidence=0.3); temporal + metadata analysers still run unaffected
+### Open CORS
 
-### Issue: Extension Manifest Warnings
-**Why:** Chrome MV3 deprecation warnings
-**Impact:** None - extension still works
+[`backend/app/main.py`](/Users/poonj/Library/CloudStorage/OneDrive-Personal/sentinel/backend/app/main.py) currently allows:
 
----
+- all origins
+- all methods
+- all headers
+- credentials enabled
 
-## Deployment Notes (Future)
+This is acceptable for rapid integration and unacceptable for production.
 
-For production deployment:
-- Use JWT instead of API keys
-- Deploy Redis to AWS ElastiCache
-- Host backend on AWS ECS/Fargate
-- Deploy dashboard to Vercel
-- Update extension manifest with production API URL
-- Add rate limiting to API
-- Implement proper logging (not console.log)
-- Add monitoring (Sentry, DataDog)
-- Consider Chrome Web Store listing for easier deployment to workers
+### Public confirmation key
 
----
+[`dashboard/src/lib/api.ts`](/Users/poonj/Library/CloudStorage/OneDrive-Personal/sentinel/dashboard/src/lib/api.ts) sends `NEXT_PUBLIC_API_KEY` from the browser. Any real deployment needs a server-mediated auth path instead.
 
-## References
+### Privacy copy drift
 
-- PRD: `Sentinel_PRD.docx`
-- Original Architecture Plan: `.claude/plans/melodic-discovering-mountain.md`
-- Multi-Modal AI Plan: `.claude/plans/replicated-stirring-axolotl.md`
-- API Docs: http://localhost:8000/docs (when running)
+Some UI strings still overstate the current privacy posture. The code stores raw usernames and does not yet implement the salted hashing approach described in earlier demo materials.
 
----
+## Data Handling Reality
 
-## What's Next
+### Stored
 
-### Critical (Must-Have)
+- Instagram username
+- composite score
+- text score when available
+- image score when available
+- modality score map when available
+- timestamps
+- confirmation events
 
-1. **Test Extension on Instagram**
-   - Load extension in Chrome
-   - Open Instagram Stories
-   - Debug Story detection (likely needs selector updates in `story-detector.ts`)
-   - Verify modality breakdown appears on overlay
-   - Confirm scores + modality data appear in dashboard
+### Not stored by backend
 
-3. **Add OpenAI API Key**
-   - Edit `backend/.env` and set `OPENAI_API_KEY=sk-...`
-   - Required for AI outreach suggestions (offline fallback works without it)
+- raw Story images
+- raw OCR output
+- raw text content
+- embeddings
+- video files
 
-### Nice-to-Have
+The extension logs some diagnostic information to the browser console during analysis. Review those logs before any external pilot if strict operator workstation controls are required.
 
-4. **Performance Profiling**
-   - Measure full pipeline on 2-core/4GB system
-   - Target: < 500ms total (< 100ms visual, < 80ms text, < 5ms temporal, < 300ms video)
+## Deployment Notes
 
-5. **Production Hardening**
-   - Change `API_KEY` in `backend/.env` to a strong secret
-   - See Deployment Notes section for full production checklist
+### Docker
 
----
+[`docker-compose.yml`](/Users/poonj/Library/CloudStorage/OneDrive-Personal/sentinel/docker-compose.yml) defines:
 
-## Contact & Credits
+- `redis`
+- `api`
+- `dashboard`
 
-Built by Claude (Opus 4.6) for hackathon submission.
-All code in this repository is original work created during this session.
+The extension is not containerised and must still be loaded into Chrome manually.
 
-**License:** To be determined by organization
+### Container images
+
+- Backend image: [`backend/Dockerfile`](/Users/poonj/Library/CloudStorage/OneDrive-Personal/sentinel/backend/Dockerfile)
+- Dashboard image: [`dashboard/Dockerfile`](/Users/poonj/Library/CloudStorage/OneDrive-Personal/sentinel/dashboard/Dockerfile)
+
+Both are sufficient for local packaging. Neither includes production orchestration, ingress, secret injection, or health-based rollout logic.
+
+## Release Blockers
+
+The repo can support demos and controlled internal pilots, but these should be completed before calling it production:
+
+1. Replace shared API-key auth with real service and user authentication.
+2. Remove the Redis flush build hook.
+3. Restrict CORS and deploy behind TLS.
+4. Decide whether usernames may be stored in plaintext; if not, redesign the identifier flow.
+5. Validate extension selectors and analysis quality on live Instagram under realistic workload.
+6. Add monitoring, audit logging, and operator access controls.
+7. Remove or rewrite any stale UI and documentation claims that imply implemented pseudonymisation.
+
+## Recommended Next Work
+
+If development continues, the next highest-value engineering areas are:
+
+1. Live validation of the extension on real Instagram Stories and selector hardening.
+2. Score quality evaluation with labelled examples and false-positive review.
+3. Server-side auth redesign for dashboard actions.
+4. Packaging and environment-specific deployment automation.
+5. Privacy and compliance review based on the code as implemented, not the pitch deck version.
