@@ -11,6 +11,7 @@ import {
   trendIcon,
   trendColor,
   riskBorderColor,
+  modalityHint,
 } from "@/lib/utils";
 
 export function PriorityTable() {
@@ -63,63 +64,75 @@ export function PriorityTable() {
     );
   }
 
+  function renderScore(score: number | null) {
+    return score ?? "\u2014";
+  }
+
   return (
     <div className="space-y-3">
-      {accounts.map((account, index) => (
-        <Link
-          key={account.username}
-          href={`/dashboard/${account.username}`}
-          className={`flex items-center gap-4 p-4 rounded-xl bg-slate-800/50 border-l-4 ${riskBorderColor(account.max_composite)} hover:bg-slate-800 transition-all duration-200 group`}
-        >
-          {/* Rank */}
-          <div className="text-slate-500 text-sm font-mono w-6 text-right">
-            #{index + 1}
-          </div>
+      {accounts.map((account, index) => {
+        const hint = modalityHint(account.latest_modality_scores);
 
-          {/* Risk Badge */}
-          <RiskBadge score={account.max_composite} />
+        return (
+          <Link
+            key={account.username}
+            href={`/dashboard/${account.username}`}
+            className={`flex items-center justify-between p-6 bg-white border border-border-light rounded-xl hover:border-primary/20 transition-all duration-200 orange-glow group ring-1 ring-transparent hover:ring-primary/5`}
+          >
+            <div className="flex items-center gap-6">
+              {/* Rank/User */}
+              <div className="flex flex-col min-w-[120px]">
+                <span className="text-sm font-bold mono-text text-black">
+                  @{account.username}
+                </span>
+                <span className="text-[10px] text-slate-500 mono-text uppercase mt-1 opacity-60">
+                  Rank #{index + 1}
+                </span>
+              </div>
 
-          {/* Account Info */}
-          <div className="flex-1 min-w-0">
-            <div className="flex items-center gap-2">
-              <span className="text-sm font-semibold text-slate-200">
-                @{account.username}
-              </span>
-              <span
-                className={`text-sm font-medium ${trendColor(account.trend)}`}
-              >
-                {trendIcon(account.trend)}
-              </span>
-            </div>
-            <div className="text-xs text-slate-500 mt-1">
-              {account.score_count} observation
-              {account.score_count !== 1 ? "s" : ""} &middot;{" "}
-              {timeAgo(account.last_seen)}
-            </div>
-          </div>
+              {/* Risk Badge */}
+              <RiskBadge score={account.max_composite} />
 
-          {/* Sub-scores */}
-          <div className="hidden sm:flex items-center gap-4 text-xs">
-            <div className="text-center">
-              <div className="text-slate-500 mb-0.5">Text</div>
-              <div className="font-semibold text-slate-300">
-                {account.latest_text_score}
+              {/* Stats */}
+              <div className="flex items-center gap-12">
+                <div className="flex flex-col">
+                  <span className="text-[10px] text-slate-500 uppercase font-bold tracking-wider opacity-60">Observations</span>
+                  <span className="text-sm font-bold mono-text text-black">{account.score_count}</span>
+                </div>
+                <div className="flex flex-col">
+                  <span className="text-[10px] text-slate-500 uppercase font-bold tracking-wider opacity-60">Trend</span>
+                  <span className={`text-sm font-bold mono-text ${trendColor(account.trend)}`}>
+                    {trendIcon(account.trend)} {account.trend.toUpperCase()}
+                  </span>
+                </div>
               </div>
             </div>
-            <div className="text-center">
-              <div className="text-slate-500 mb-0.5">Image</div>
-              <div className="font-semibold text-slate-300">
-                {account.latest_image_score}
-              </div>
-            </div>
-          </div>
 
-          {/* Arrow */}
-          <div className="text-slate-600 group-hover:text-slate-400 transition-colors">
-            &#8250;
-          </div>
-        </Link>
-      ))}
+            <div className="flex items-center gap-12">
+              {/* Modality Scores */}
+              <div className="flex gap-6">
+                {account.latest_text_score !== null && (
+                  <div className="text-right">
+                    <p className="text-[10px] text-slate-500 font-bold uppercase tracking-wider opacity-60">Text</p>
+                    <p className="text-sm font-bold mono-text text-black">{account.latest_text_score}</p>
+                  </div>
+                )}
+                {account.latest_image_score !== null && (
+                  <div className="text-right">
+                    <p className="text-[10px] text-slate-500 font-bold uppercase tracking-wider opacity-60">Image</p>
+                    <p className="text-sm font-bold mono-text text-black">{account.latest_image_score}</p>
+                  </div>
+                )}
+              </div>
+
+              {/* Action */}
+              <button className="px-6 py-2 border border-primary text-primary text-[11px] font-bold rounded hover:bg-primary hover:text-white transition-all orange-glow">
+                Review Account
+              </button>
+            </div>
+          </Link>
+        );
+      })}
     </div>
   );
 }

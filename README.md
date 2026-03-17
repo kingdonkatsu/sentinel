@@ -80,14 +80,11 @@ python3 -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
 REDIS_URL=redis://localhost:6379/0 uvicorn app.main:app --reload
 
-# 3. Seed Demo Data
-REDIS_URL=redis://localhost:6379/0 python scripts/seed_demo.py
-
-# 4. Start Dashboard
+# 3. Start Dashboard
 cd ../dashboard
 npm install && npm run dev
 
-# 5. Load Extension (optional)
+# 4. Load Extension (optional)
 cd ../extension
 npm install && npm run build
 # Load dist/ in chrome://extensions
@@ -100,8 +97,7 @@ npm install && npm run build
 ## 📊 What You'll See
 
 ### Dashboard (http://localhost:3000/dashboard)
-- **12 demo accounts** with realistic Singapore youth Instagram usernames
-- **Risk scores** from 22 (low) to 92 (critical)
+- **Prioritized accounts** ranked by risk score
 - **Real-time updates** via Server-Sent Events
 - **Colour-coded badges**: Red ≥85, Orange ≥70, Yellow ≥50
 
@@ -149,7 +145,9 @@ npm install && npm run build
 | GET | `/api/v1/dashboard` | Get prioritized account list |
 | GET | `/api/v1/dashboard/{username}` | Get account detail |
 | GET | `/api/v1/scores/feed` | SSE real-time stream |
-| POST | `/api/v1/outreach/suggest` | AI conversation starters |
+| POST | `/api/v1/outreach/suggest` | AI conversation starters (`X-Sentinel-Outreach-Provider: openai|fallback`) |
+| POST | `/api/v1/accounts/{username}/confirm` | Record a confirmed case for calibration |
+| GET | `/api/v1/confirmations` | Poll confirmations since a millisecond timestamp |
 
 **Docs:** http://localhost:8000/docs (Swagger UI)
 
@@ -158,14 +156,15 @@ npm install && npm run build
 ## ⚠️ Current Status
 
 ### ✅ Working
-- Backend API (all endpoints tested)
+- Backend API (13 integration tests passing; live OpenAI requires `OPENAI_API_KEY`)
 - Dashboard (full UI + real-time updates)
-- Demo mode (seeded data)
 
 ### ⚠️ Needs Testing
 - Chrome extension on real Instagram
 - Story detection (DOM selectors may need updates)
 - Image capture (likely CORS-blocked, fallback exists)
+- Scoring consistency across consecutive stories and different users is still unreliable
+- Live OpenAI path with a real API key
 
 ---
 
@@ -193,9 +192,12 @@ This is a **working MVP** demonstrating:
 ## 🧪 Testing
 
 ```bash
+# Start Redis first
+docker compose up -d redis
+
 # Backend tests
 cd backend
-pytest tests/
+pytest tests -q -p no:cacheprovider
 
 # Extension TypeScript check
 cd extension
@@ -205,6 +207,17 @@ npm run build
 cd dashboard
 npm run build
 ```
+
+### AI Backend Verification
+
+Without an OpenAI key, `POST /api/v1/outreach/suggest` returns the fallback suggestion set and the
+`X-Sentinel-Outreach-Provider` response header will be `fallback`.
+
+To test the live provider:
+1. Set `OPENAI_API_KEY=sk-...` in `backend/.env`.
+2. Restart the backend.
+3. Call `POST /api/v1/outreach/suggest` and confirm `X-Sentinel-Outreach-Provider: openai`.
+4. If you use the dashboard, hard-refresh the account page before re-checking outreach suggestions because the card caches for 5 minutes.
 
 ---
 

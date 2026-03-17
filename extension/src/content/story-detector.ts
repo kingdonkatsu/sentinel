@@ -1,16 +1,64 @@
+import type { AnalysisResult } from "../shared/types";
 import { AnalysisPipeline } from "./analysis-pipeline";
+import { findPrimaryStoryMedia } from "./image-analyser";
+import { extractText } from "./text-analyser";
 
-/**
- * Detects when Instagram Stories are being viewed and triggers analysis.
- * Uses MutationObserver to watch for Story viewer DOM changes.
- * Only processes content the worker is actively viewing — no scraping.
- */
+const RESERVED_PATHS = new Set([
+  "",
+  "activity",
+  "accounts",
+  "archive",
+  "direct",
+  "home",
+  "inbox",
+  "messages",
+  "notifications",
+  "explore",
+  "p",
+  "reel",
+  "reels",
+  "search",
+  "stories",
+]);
+
+const SPONSORED_LABEL_PATTERNS = [
+  /\bsponsored\b/i,
+  /\bpaid partnership\b/i,
+  /\bpromoted\b/i,
+];
+
+const SPONSORED_CTA_PATTERNS = [
+  /\blearn more\b/i,
+  /\bshop now\b/i,
+  /\bview shop\b/i,
+  /\bbook now\b/i,
+  /\bget quote\b/i,
+  /\bget tickets\b/i,
+  /\binstall now\b/i,
+  /\bdownload\b/i,
+  /\border now\b/i,
+  /\bsign up\b/i,
+  /\bcontact us\b/i,
+  /\bwatch more\b/i,
+  /\bvisit (site|website)\b/i,
+  /\bswipe up\b/i,
+];
+
+const HEADER_AD_LABEL_PATTERNS = [/^ad$/i, /^sponsored$/i];
+
 export class StoryDetector {
   private observer: MutationObserver;
+  private pollTimer: number | null = null;
   private isProcessing = false;
-  private lastProcessedTime = 0;
+  private lastProcessedAt = 0;
+  private lastProcessedSignature = "";
+  private processedSignatures = new Map<string, number>();
+  private cachedUsernames = new Map<string, string>();
   private pipeline: AnalysisPipeline;
-  private readonly THROTTLE_MS = 2000;
+  private readonly THROTTLE_MS = 1500;
+  private readonly POLL_MS = 1500;
+  private readonly DUPLICATE_WINDOW_MS = 10000;
+  private readonly SIGNATURE_TTL_MS = 120000;
 
   constructor(pipeline: AnalysisPipeline) {
     this.pipeline = pipeline;
@@ -18,49 +66,523 @@ export class StoryDetector {
   }
 
   start(): void {
-    this.observer.observe(document.body, {
-      childList: true,
-      subtree: true,
-    });
+    if (document.body) {
+      this.observer.observe(document.body, {
+        childList: true,
+        subtree: true,
+      });
+    }
+
+    this.pollTimer = window.setInterval(() => {
+      void this.scanForStory("poll");
+    }, this.POLL_MS);
+
+    void this.scanForStory("startup");
     console.log("[Sentinel] Story detector started");
   }
 
   stop(): void {
     this.observer.disconnect();
-  }
-
-  private onMutation(_mutations: MutationRecord[]): void {
-    const storyViewer = this.findStoryViewer();
-    if (storyViewer && !this.isProcessing) {
-      this.processCurrentFrame(storyViewer);
+    if (this.pollTimer !== null) {
+      window.clearInterval(this.pollTimer);
+      this.pollTimer = null;
     }
   }
 
-  /**
-   * Finds the Instagram Story viewer element using structural heuristics.
-   * Avoids relying on specific class names (Instagram uses hashed CSS modules).
-   */
+  async analyseVisibleStory(): Promise<{
+    ok: boolean;
+    message: string;
+    result?: AnalysisResult;
+  }> {
+    const viewer = this.findStoryViewer();
+    if (!viewer) {
+      return {
+        ok: false,
+        message: "No Story viewer detected. Open an Instagram Story first.",
+      };
+    }
+
+    const signature = this.buildStorySignature(viewer);
+    const username = this.extractUsername(viewer, signature);
+    const sponsoredEvidence = this.getSponsoredEvidence(viewer);
+    if (sponsoredEvidence) {
+      this.markSignatureProcessed(signature);
+      return {
+        ok: false,
+        message: `Sponsored stories are ignored (${sponsoredEvidence}).`,
+      };
+    }
+
+    const result = await this.processCurrentFrame(viewer, "manual", true);
+    if (!result) {
+      return {
+        ok: false,
+        message: "Story analysis was skipped. Try changing stories and retrying.",
+      };
+    }
+
+    return {
+      ok: true,
+      message: `Analysed @${result.score.username} (${result.score.composite}/100)`,
+      result,
+    };
+  }
+
+  getVisibleStoryViewer(): HTMLElement | null {
+    return this.findStoryViewer();
+  }
+
+  private onMutation(): void {
+    void this.scanForStory("mutation");
+  }
+
+  private async scanForStory(reason: string): Promise<void> {
+    if (this.isProcessing) {
+      return;
+    }
+
+    const viewer = this.findStoryViewer();
+    if (!viewer) {
+      return;
+    }
+
+    await this.processCurrentFrame(viewer, reason, false);
+  }
+
   private findStoryViewer(): HTMLElement | null {
-    // Strategy 1: Look for section with role="dialog" (Story modal)
-    const dialogs = document.querySelectorAll(
-      'div[role="dialog"], section[role="presentation"]'
-    );
-    for (const el of dialogs) {
-      if (this.isLikelyStoryViewer(el as HTMLElement)) {
-        return el as HTMLElement;
+    const isStoryRoute = this.isStoryRouteActive();
+    if (isStoryRoute) {
+      const routeViewer = this.findStoryRouteViewer();
+      if (routeViewer) {
+        return routeViewer;
       }
     }
 
-    // Strategy 2: Look for full-viewport overlay with image/video
-    const fullScreenSections = document.querySelectorAll("section");
-    for (const section of fullScreenSections) {
-      const rect = section.getBoundingClientRect();
+    const candidates = new Set<HTMLElement>();
+    const selectors = ["div[role='dialog']"];
+
+    if (isStoryRoute) {
+      selectors.push("main", "section", "article");
+    }
+
+    for (const selector of selectors) {
+      document.querySelectorAll(selector).forEach((el) => {
+        if (el instanceof HTMLElement) {
+          candidates.add(el);
+        }
+      });
+    }
+
+    let bestCandidate: HTMLElement | null = null;
+    let bestScore = 0;
+
+    for (const candidate of candidates) {
+      const score = this.scoreCandidate(candidate);
+      if (score > bestScore) {
+        bestCandidate = candidate;
+        bestScore = score;
+      }
+    }
+
+    return bestScore >= (isStoryRoute ? 5 : 8) ? bestCandidate : null;
+  }
+
+  private findStoryRouteViewer(): HTMLElement | null {
+    const mediaCandidates = Array.from(
+      document.querySelectorAll("video, img[src]")
+    )
+      .filter((el): el is HTMLVideoElement | HTMLImageElement => {
+        return el instanceof HTMLVideoElement || el instanceof HTMLImageElement;
+      })
+      .filter((el) => this.isVisibleMedia(el))
+      .sort((a, b) => this.mediaArea(b) - this.mediaArea(a));
+
+    for (const media of mediaCandidates) {
+      const container = this.findContainerForMedia(media);
+      if (container) {
+        return container;
+      }
+    }
+
+    return null;
+  }
+
+  private findContainerForMedia(
+    media: HTMLVideoElement | HTMLImageElement
+  ): HTMLElement | null {
+    let current: HTMLElement | null = media.parentElement;
+
+    while (current && current !== document.body) {
+      const rect = current.getBoundingClientRect();
       if (
-        rect.width > window.innerWidth * 0.5 &&
-        rect.height > window.innerHeight * 0.5
+        rect.width > window.innerWidth * 0.45 &&
+        rect.height > window.innerHeight * 0.45
       ) {
-        if (this.isLikelyStoryViewer(section as HTMLElement)) {
-          return section as HTMLElement;
+        return current;
+      }
+
+      current = current.parentElement;
+    }
+
+    return media.parentElement ?? media;
+  }
+
+  private scoreCandidate(el: HTMLElement): number {
+    const rect = el.getBoundingClientRect();
+    if (rect.width < window.innerWidth * 0.35) {
+      return 0;
+    }
+    if (rect.height < window.innerHeight * 0.35) {
+      return 0;
+    }
+
+    const hasMedia =
+      el.querySelector('img[draggable="false"], img[src], video') !== null;
+    if (!hasMedia) {
+      return 0;
+    }
+
+    const isDialog = el.matches("div[role='dialog']");
+    const isStoryRoute = this.isStoryRouteActive();
+    const hasProgressBar =
+      el.querySelectorAll('div[style*="scaleX"]').length > 0 ||
+      el.querySelectorAll('div[role="progressbar"]').length > 0;
+    const hasNavigationButtons =
+      el.querySelector(
+        'button[aria-label*="Next"], button[aria-label*="Previous"], button[aria-label*="Pause"], button[aria-label*="Close"]'
+      ) !== null;
+    const hasReplyComposer =
+      el.querySelector(
+        'input[placeholder*="Reply"], textarea[placeholder*="Reply"], [data-testid="reply-composer"], [aria-label*="Reply"]'
+      ) !== null;
+    const hasUserHeader = this.findUsernameLink(el) !== null;
+    const fillsViewport =
+      rect.width > window.innerWidth * 0.5 &&
+      rect.height > window.innerHeight * 0.5;
+    const hasStoryChrome =
+      hasProgressBar || hasNavigationButtons || hasReplyComposer;
+
+    const hasStoryRouteStructure =
+      isStoryRoute && fillsViewport && hasUserHeader;
+
+    if (!hasStoryChrome && !(isStoryRoute && isDialog) && !hasStoryRouteStructure) {
+      return 0;
+    }
+
+    let score = 0;
+    score += 3; // has media
+    if (fillsViewport) {
+      score += 2;
+    }
+    if (isDialog) {
+      score += 3;
+    }
+    if (isStoryRoute) {
+      score += 2;
+    }
+    if (hasProgressBar) {
+      score += 4;
+    }
+    if (hasUserHeader) {
+      score += 1;
+    }
+    if (hasNavigationButtons) {
+      score += 2;
+    }
+    if (hasReplyComposer) {
+      score += 2;
+    }
+
+    return score;
+  }
+
+  private async processCurrentFrame(
+    viewer: HTMLElement,
+    reason: string,
+    force: boolean
+  ): Promise<AnalysisResult | null> {
+    const now = Date.now();
+    if (!force && now - this.lastProcessedAt < this.THROTTLE_MS) {
+      return null;
+    }
+
+    const signature = this.buildStorySignature(viewer);
+    const username = this.extractUsername(viewer, signature);
+    if (
+      !force &&
+      signature === this.lastProcessedSignature &&
+      now - this.lastProcessedAt < this.DUPLICATE_WINDOW_MS
+    ) {
+      return null;
+    }
+    if (!force && this.wasRecentlyProcessed(signature, now)) {
+      return null;
+    }
+
+    if (!force && !this.hasRenderableStoryContent(viewer)) {
+      return null;
+    }
+
+    const sponsoredEvidence = this.getSponsoredEvidence(viewer);
+    if (sponsoredEvidence) {
+      this.markSignatureProcessed(signature, now);
+      console.log("[Sentinel] Sponsored story skipped", {
+        username,
+        reason,
+        evidence: sponsoredEvidence,
+      });
+      return null;
+    }
+
+    this.isProcessing = true;
+
+    try {
+      const result = await this.pipeline.analyse(viewer, username);
+      const completedAt = Date.now();
+      this.lastProcessedAt = completedAt;
+      this.lastProcessedSignature = signature;
+      this.markSignatureProcessed(signature, completedAt);
+
+      console.log("[Sentinel] Story analysed", {
+        reason,
+        username: result.score.username,
+        composite: result.score.composite,
+        text: result.score.textScore,
+        image: result.score.imageScore,
+        transmitted: result.transmitted,
+        transmissionError: result.transmissionError,
+      });
+
+      return result;
+    } catch (error) {
+      const isContextInvalidated =
+        error instanceof Error && error.message.includes("Extension context invalidated");
+
+      if (isContextInvalidated) {
+        console.error(
+          "[Sentinel] Extension was reloaded — please refresh this Instagram tab to re-enable analysis."
+        );
+        return null;
+      }
+
+      this.markSignatureProcessed(signature, Date.now());
+      console.warn("[Sentinel] Analysis error:", error);
+      return null;
+    } finally {
+      this.isProcessing = false;
+    }
+  }
+
+  private buildStorySignature(viewer: HTMLElement): string {
+    const mediaSource = this.normalizeMediaSource(this.getPrimaryMediaSource(viewer));
+    const routeKey = this.isStoryRouteActive() ? window.location.pathname : "";
+    const textSignature =
+      mediaSource === "no-media"
+        ? extractText(viewer)
+            .replace(/\s+/g, " ")
+            .trim()
+            .slice(0, 120)
+        : "";
+
+    return `${routeKey}|${mediaSource}|${textSignature || ""}`;
+  }
+
+  private hasRenderableStoryContent(viewer: HTMLElement): boolean {
+    return findPrimaryStoryMedia(viewer) !== null;
+  }
+
+  private getPrimaryMediaSource(viewer: HTMLElement): string {
+    const media = findPrimaryStoryMedia(viewer);
+    if (media instanceof HTMLImageElement && (media.currentSrc || media.src)) {
+      return media.currentSrc || media.src;
+    }
+
+    if (
+      media instanceof HTMLVideoElement &&
+      (media.currentSrc || media.src || media.poster)
+    ) {
+      return media.currentSrc || media.src || media.poster;
+    }
+
+    return "no-media";
+  }
+
+  private normalizeMediaSource(source: string): string {
+    if (!source || source === "no-media") {
+      return "no-media";
+    }
+
+    try {
+      const url = new URL(source, window.location.origin);
+      return `${url.origin}${url.pathname}`;
+    } catch {
+      return source.split("?")[0]?.split("#")[0] || source;
+    }
+  }
+
+  private extractUsername(viewer: HTMLElement, signature: string): string {
+    const link = this.findUsernameLink(viewer);
+    if (link) {
+      const username = this.parseUsernameFromHref(link.getAttribute("href"));
+      if (username) {
+        this.cachedUsernames.set(signature, username);
+        return username;
+      }
+    }
+
+    const textCandidates = viewer.querySelectorAll(
+      "header span, header a, span[dir='auto']"
+    );
+    for (const candidate of textCandidates) {
+      const text = candidate.textContent?.trim();
+      if (
+        text &&
+        /^[A-Za-z0-9._]{1,30}$/.test(text) &&
+        !RESERVED_PATHS.has(text.toLowerCase())
+      ) {
+        this.cachedUsernames.set(signature, text);
+        return text;
+      }
+    }
+
+    const routeUsername = this.parseUsernameFromStoryRoute();
+    if (routeUsername) {
+      this.cachedUsernames.set(signature, routeUsername);
+      return routeUsername;
+    }
+
+    return this.cachedUsernames.get(signature) ?? "unknown_story";
+  }
+
+  private wasRecentlyProcessed(signature: string, now: number): boolean {
+    this.pruneProcessedSignatures(now);
+    const processedAt = this.processedSignatures.get(signature);
+    return processedAt !== undefined && now - processedAt < this.SIGNATURE_TTL_MS;
+  }
+
+  private markSignatureProcessed(signature: string, now = Date.now()): void {
+    this.lastProcessedAt = now;
+    this.lastProcessedSignature = signature;
+    this.processedSignatures.set(signature, now);
+  }
+
+  private pruneProcessedSignatures(now: number): void {
+    for (const [signature, processedAt] of this.processedSignatures) {
+      if (now - processedAt >= this.SIGNATURE_TTL_MS) {
+        this.processedSignatures.delete(signature);
+        this.cachedUsernames.delete(signature);
+      }
+    }
+  }
+
+  private isStoryRouteActive(): boolean {
+    const segments = window.location.pathname.split("/").filter(Boolean);
+    return segments[0]?.toLowerCase() === "stories";
+  }
+
+  private parseUsernameFromStoryRoute(): string | null {
+    const segments = window.location.pathname.split("/").filter(Boolean);
+    if (segments[0]?.toLowerCase() !== "stories") {
+      return null;
+    }
+
+    if (segments[1]?.toLowerCase() === "highlights") {
+      return null;
+    }
+
+    return this.parseUsernameFromHref(`/${segments[1] ?? ""}/`);
+  }
+
+  private getSponsoredEvidence(viewer: HTMLElement): string | null {
+    for (const root of this.getSponsoredScanRoots(viewer)) {
+      const headerEvidence = this.findHeaderAdLabel(root);
+      if (headerEvidence) {
+        return headerEvidence;
+      }
+
+      const textEvidence = this.findSponsoredText(root);
+      if (textEvidence) {
+        return textEvidence;
+      }
+
+      const ctaEvidence = this.findSponsoredCta(root);
+      if (ctaEvidence) {
+        return ctaEvidence;
+      }
+    }
+
+    return null;
+  }
+
+  private findHeaderAdLabel(root: HTMLElement): string | null {
+    const selector = "header span, header div, header a";
+
+    for (const el of root.querySelectorAll(selector)) {
+      if (!(el instanceof HTMLElement)) {
+        continue;
+      }
+
+      const text = el.textContent?.trim();
+      if (
+        text &&
+        HEADER_AD_LABEL_PATTERNS.some((pattern) => pattern.test(text))
+      ) {
+        return text;
+      }
+    }
+
+    return null;
+  }
+
+  private getSponsoredScanRoots(viewer: HTMLElement): HTMLElement[] {
+    const roots: HTMLElement[] = [];
+    const seen = new Set<HTMLElement>();
+
+    const addRoot = (root: HTMLElement | null) => {
+      if (!root || seen.has(root)) {
+        return;
+      }
+      seen.add(root);
+      roots.push(root);
+    };
+
+    addRoot(viewer);
+
+    let current: HTMLElement | null = viewer.parentElement;
+    let depth = 0;
+    while (current && current !== document.body && depth < 6) {
+      addRoot(current);
+      current = current.parentElement;
+      depth += 1;
+    }
+
+    if (this.isStoryRouteActive()) {
+      addRoot(document.querySelector("main"));
+      addRoot(document.body);
+    }
+
+    return roots;
+  }
+
+  private findSponsoredText(root: HTMLElement): string | null {
+    const selector =
+      "span, div, a, button, [aria-label], [role='button'], [data-testid]";
+
+    for (const el of root.querySelectorAll(selector)) {
+      if (!(el instanceof HTMLElement)) {
+        continue;
+      }
+
+      const candidates = [
+        el.textContent?.trim(),
+        el.getAttribute("aria-label")?.trim(),
+      ].filter((value): value is string => Boolean(value));
+
+      for (const candidate of candidates) {
+        if (
+          SPONSORED_LABEL_PATTERNS.some((pattern) => pattern.test(candidate))
+        ) {
+          return candidate;
         }
       }
     }
@@ -68,60 +590,93 @@ export class StoryDetector {
     return null;
   }
 
-  private isLikelyStoryViewer(el: HTMLElement): boolean {
-    // Must contain an image or video
-    const hasMedia =
-      el.querySelector('img[draggable="false"]') !== null ||
-      el.querySelector("video") !== null;
+  private findSponsoredCta(root: HTMLElement): string | null {
+    const selector = "a, button, [role='button']";
 
-    // Check for progress bar pattern (thin elements at the top)
-    const hasProgressBar =
-      el.querySelectorAll('div[style*="scaleX"]').length > 0 ||
-      el.querySelectorAll('div[role="progressbar"]').length > 0;
+    for (const el of root.querySelectorAll(selector)) {
+      if (!(el instanceof HTMLElement)) {
+        continue;
+      }
 
-    // Must have a user header (link to profile)
-    const hasUserHeader = el.querySelector('a[href^="/"]') !== null;
+      const candidates = [
+        el.textContent?.trim(),
+        el.getAttribute("aria-label")?.trim(),
+      ].filter((value): value is string => Boolean(value));
 
-    return hasMedia && (hasProgressBar || hasUserHeader);
-  }
-
-  private async processCurrentFrame(viewer: HTMLElement): Promise<void> {
-    const now = Date.now();
-    if (now - this.lastProcessedTime < this.THROTTLE_MS) return;
-
-    this.isProcessing = true;
-    this.lastProcessedTime = now;
-
-    try {
-      const username = this.extractUsername(viewer);
-      await this.pipeline.analyse(viewer, username);
-    } catch (err) {
-      console.warn("[Sentinel] Analysis error:", err);
-    } finally {
-      this.isProcessing = false;
-    }
-  }
-
-  /**
-   * Extracts Instagram username from the Story header.
-   * This is the visible username the worker is already seeing on screen.
-   */
-  private extractUsername(viewer: HTMLElement): string {
-    // Look for the profile link in the Story header
-    const links = viewer.querySelectorAll('a[href^="/"]');
-    for (const link of links) {
-      const href = link.getAttribute("href");
-      if (href && href !== "/" && !href.includes("/p/") && !href.includes("/explore/")) {
-        return href.replace(/^\//, "").replace(/\/$/, "");
+      for (const candidate of candidates) {
+        if (SPONSORED_CTA_PATTERNS.some((pattern) => pattern.test(candidate))) {
+          return candidate;
+        }
       }
     }
 
-    // Fallback: look for header text (username displayed at top of Story)
-    const headerSpan = viewer.querySelector("header span");
-    if (headerSpan?.textContent) {
-      return headerSpan.textContent.trim();
+    return null;
+  }
+
+  private isVisibleMedia(media: HTMLVideoElement | HTMLImageElement): boolean {
+    const rect = media.getBoundingClientRect();
+    if (rect.width < window.innerWidth * 0.25) {
+      return false;
+    }
+    if (rect.height < window.innerHeight * 0.25) {
+      return false;
     }
 
-    return "unknown_" + Date.now();
+    if (media instanceof HTMLImageElement) {
+      return media.complete && media.naturalWidth > 0;
+    }
+
+    return media.readyState >= 2;
+  }
+
+  private mediaArea(media: HTMLVideoElement | HTMLImageElement): number {
+    const rect = media.getBoundingClientRect();
+    return rect.width * rect.height;
+  }
+
+  private findUsernameLink(viewer: HTMLElement): HTMLAnchorElement | null {
+    const links = viewer.querySelectorAll("a[href]");
+    for (const link of links) {
+      if (!(link instanceof HTMLAnchorElement)) {
+        continue;
+      }
+
+      if (this.parseUsernameFromHref(link.getAttribute("href"))) {
+        return link;
+      }
+    }
+
+    return null;
+  }
+
+  private parseUsernameFromHref(href: string | null): string | null {
+    if (!href) {
+      return null;
+    }
+
+    try {
+      const url = new URL(href, window.location.origin);
+      if (url.origin !== window.location.origin) {
+        return null;
+      }
+
+      const segments = url.pathname.split("/").filter(Boolean);
+      if (segments.length !== 1) {
+        return null;
+      }
+
+      const candidate = segments[0];
+      if (RESERVED_PATHS.has(candidate.toLowerCase())) {
+        return null;
+      }
+
+      if (!/^[A-Za-z0-9._]{1,30}$/.test(candidate)) {
+        return null;
+      }
+
+      return candidate;
+    } catch {
+      return null;
+    }
   }
 }

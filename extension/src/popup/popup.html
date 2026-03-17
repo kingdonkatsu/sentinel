@@ -4,148 +4,244 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Sentinel</title>
+  <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@700&family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@500&display=swap" rel="stylesheet">
   <style>
+    :root {
+      --primary: #FF7043;
+      --bg-light: #FFFFFF;
+      --border-light: #EAEAEA;
+      --text-black: #000000;
+      --text-slate: #475569;
+    }
     * { margin: 0; padding: 0; box-sizing: border-box; }
     body {
-      width: 340px;
-      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
-      background: #0f172a;
-      color: #e2e8f0;
-      padding: 20px;
+      width: 360px;
+      font-family: 'Inter', sans-serif;
+      background: var(--bg-light);
+      color: var(--text-black);
+      padding: 24px;
     }
     .header {
       display: flex;
-      align-items: center;
-      gap: 10px;
-      margin-bottom: 20px;
-      padding-bottom: 14px;
-      border-bottom: 1px solid #1e293b;
+      flex-direction: column;
+      gap: 4px;
+      margin-bottom: 24px;
     }
-    .logo {
-      width: 32px;
-      height: 32px;
-      background: linear-gradient(135deg, #3b82f6, #8b5cf6);
-      border-radius: 8px;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      font-weight: bold;
-      font-size: 18px;
-    }
-    .title { font-size: 18px; font-weight: 700; }
-    .subtitle { font-size: 11px; color: #94a3b8; }
-    label {
-      display: block;
-      font-size: 12px;
-      color: #94a3b8;
-      margin-bottom: 4px;
-      margin-top: 14px;
-    }
-    input, select {
-      width: 100%;
-      padding: 8px 12px;
-      background: #1e293b;
-      border: 1px solid #334155;
-      border-radius: 6px;
-      color: #e2e8f0;
-      font-size: 13px;
-      outline: none;
-    }
-    input:focus { border-color: #3b82f6; }
-    .slider-container {
+    .logo-container {
       display: flex;
       align-items: center;
       gap: 8px;
     }
+    .logo-text {
+      font-family: 'Space Grotesk', sans-serif;
+      font-size: 20px;
+      font-weight: 700;
+      letter-spacing: -0.02em;
+    }
+    .subtitle {
+      font-size: 11px;
+      color: var(--text-slate);
+      font-weight: 500;
+    }
+    .section-title {
+      font-family: 'Space Grotesk', sans-serif;
+      font-size: 11px;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.1em;
+      color: var(--text-black);
+      opacity: 0.4;
+      margin-bottom: 12px;
+      margin-top: 24px;
+    }
+    label {
+      display: block;
+      font-size: 11px;
+      font-weight: 600;
+      color: var(--text-slate);
+      margin-bottom: 6px;
+    }
+    .form-group {
+      margin-bottom: 16px;
+    }
+    input[type="text"], input[type="password"] {
+      width: 100%;
+      padding: 10px 12px;
+      background: #f8fafc;
+      border: 1px solid var(--border-light);
+      border-radius: 8px;
+      color: var(--text-black);
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 12px;
+      transition: all 0.2s;
+    }
+    input:focus {
+      outline: none;
+      border-color: var(--primary);
+      box-shadow: 0 0 0 2px rgba(255, 112, 67, 0.1);
+    }
+    .slider-container {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+    .slider-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
     input[type="range"] {
-      flex: 1;
-      padding: 0;
-      accent-color: #3b82f6;
+      width: 100%;
+      height: 4px;
+      background: #f1f5f9;
+      border-radius: 2px;
+      appearance: none;
+      accent-color: var(--primary);
+      margin: 10px 0;
     }
     .slider-value {
-      font-size: 13px;
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 12px;
       font-weight: 600;
-      min-width: 32px;
-      text-align: right;
+      color: var(--primary);
     }
     .weight-row {
       display: flex;
       justify-content: space-between;
-      font-size: 12px;
-      color: #64748b;
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 10px;
+      font-weight: 500;
+      color: var(--text-slate);
       margin-top: 4px;
+      opacity: 0.8;
     }
     button {
       width: 100%;
-      margin-top: 20px;
-      padding: 10px;
-      background: linear-gradient(135deg, #3b82f6, #8b5cf6);
+      padding: 12px;
+      background: var(--primary);
       border: none;
       border-radius: 8px;
       color: white;
-      font-weight: 600;
-      font-size: 14px;
+      font-weight: 700;
+      font-size: 13px;
       cursor: pointer;
+      transition: all 0.2s;
+      margin-top: 8px;
     }
-    button:hover { opacity: 0.9; }
+    button:hover {
+      box-shadow: 0 4px 12px rgba(255, 112, 67, 0.2);
+      transform: translateY(-1px);
+    }
+    button:active {
+      transform: translateY(0);
+    }
+    .actions {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 12px;
+      margin-top: 12px;
+    }
+    .secondary-button {
+      background: white;
+      border: 1px solid var(--border-light);
+      color: var(--text-slate);
+      margin-top: 0;
+    }
+    .secondary-button:hover {
+      border-color: var(--primary);
+      color: var(--primary);
+      background: rgba(255, 112, 67, 0.02);
+      box-shadow: none;
+    }
     .status {
       text-align: center;
-      font-size: 12px;
-      margin-top: 8px;
-      color: #22c55e;
+      font-size: 11px;
+      font-weight: 600;
+      margin-top: 16px;
+      padding: 8px;
+      border-radius: 6px;
       display: none;
     }
-    .privacy-note {
-      margin-top: 16px;
-      padding: 10px;
-      background: #1e293b;
-      border-radius: 8px;
-      font-size: 11px;
-      color: #64748b;
-      line-height: 1.5;
+    .status.success {
+      background: #f0fdf4;
+      color: #16a34a;
+      display: block;
     }
-    .privacy-note strong { color: #94a3b8; }
+    .status.error {
+      background: #fef2f2;
+      color: #dc2626;
+      display: block;
+    }
+    .footer {
+      margin-top: 24px;
+      padding-top: 16px;
+      border-top: 1px solid var(--border-light);
+    }
+    .privacy-note {
+      font-size: 10px;
+      color: var(--text-slate);
+      line-height: 1.6;
+      opacity: 0.7;
+    }
+    .privacy-note strong {
+      color: var(--text-black);
+      font-weight: 600;
+    }
   </style>
 </head>
 <body>
   <div class="header">
-    <div class="logo">S</div>
-    <div>
-      <div class="title">Sentinel</div>
-      <div class="subtitle">Privacy-First Mental Health Triage</div>
+    <div class="logo-container">
+      <span class="logo-text">Sentinel</span>
+    </div>
+    <div class="subtitle">Privacy-First Mental Health Triage</div>
+  </div>
+
+  <div class="section-title">Configuration</div>
+
+  <div class="form-group">
+    <label for="apiUrl">API ENDPOINT</label>
+    <input type="text" id="apiUrl" placeholder="http://localhost:8000">
+  </div>
+
+  <div class="form-group">
+    <label for="apiKey">ACCESS TOKEN</label>
+    <input type="password" id="apiKey" placeholder="Enter your API key">
+  </div>
+
+  <div class="section-title">Calibration</div>
+
+  <div class="form-group">
+    <div class="slider-header">
+      <label for="threshold">RISK THRESHOLD</label>
+      <span class="slider-value" id="thresholdValue">70</span>
+    </div>
+    <input type="range" id="threshold" min="30" max="95" value="70">
+  </div>
+
+  <div class="form-group">
+    <div class="slider-header">
+      <label>SCORE WEIGHTS (IMG vs TXT)</label>
+    </div>
+    <input type="range" id="imageWeight" min="0" max="100" value="50">
+    <div class="weight-row">
+      <span id="imageWeightValue">50% IMG</span>
+      <span id="textWeightValue">50% TXT</span>
     </div>
   </div>
 
-  <label for="apiUrl">API URL</label>
-  <input type="text" id="apiUrl" placeholder="http://localhost:8000">
-
-  <label for="apiKey">API Key</label>
-  <input type="password" id="apiKey" placeholder="Enter your API key">
-
-  <label for="threshold">Risk Threshold</label>
-  <div class="slider-container">
-    <input type="range" id="threshold" min="30" max="95" value="70">
-    <span class="slider-value" id="thresholdValue">70</span>
-  </div>
-
-  <label>Score Weights</label>
-  <div class="slider-container">
-    <span style="font-size:12px;color:#94a3b8;">Image</span>
-    <input type="range" id="imageWeight" min="0" max="100" value="50">
-    <span style="font-size:12px;color:#94a3b8;">Text</span>
-  </div>
-  <div class="weight-row">
-    <span id="imageWeightValue">50%</span>
-    <span id="textWeightValue">50%</span>
-  </div>
-
   <button id="saveBtn">Save Configuration</button>
-  <div class="status" id="status">Settings saved!</div>
+  <div class="actions">
+    <button id="pingBtn" class="secondary-button" type="button">Test Link</button>
+    <button id="analyseBtn" class="secondary-button" type="button">Force Scan</button>
+  </div>
+  <div class="status" id="status"></div>
 
-  <div class="privacy-note">
-    <strong>Privacy:</strong> Sentinel analyses content in your browser only.
-    No images, text, or personal data ever leave your device.
-    Only anonymised risk scores are transmitted.
+  <div class="footer">
+    <div class="privacy-note">
+      <strong>Privacy:</strong> Sentinel analyses content in your browser only.
+      Numerical risk scores are transmitted. REV: 2.4.0
+    </div>
   </div>
 
   <script type="module" src="popup.ts"></script>

@@ -12,10 +12,16 @@ const DISTRESS_KEYWORDS: Record<string, number> = {
   suicide: -5, kill: -5, die: -5, dead: -5, "end it": -5, overdose: -5,
   worthless: -4, hopeless: -4, "give up": -4, "no point": -4, cutting: -4,
   "self harm": -4, "self-harm": -4, "want to disappear": -4,
+  "tired of life": -4, "tired of living": -4, "done with life": -4,
   // Moderate distress
   depressed: -3, anxiety: -3, crying: -3, lonely: -3, scared: -3,
   hate: -3, hurting: -3, numb: -3, broken: -3, trapped: -3,
   empty: -3, pain: -3, suffer: -3, nightmare: -3, panic: -3,
+  // Dissociation / metaphorical self-erasure (multi-word to avoid slang false positives)
+  "don't feel real": -3, "not even here": -3, "ghost in my own life": -3,
+  "fading away": -3, "disconnected from everything": -3, "already disappeared": -3,
+  "already a ghost": -3, "feel invisible": -3, "feel like a ghost": -3,
+  "feel like i'm not here": -3, "don't feel like myself": -2,
   // Mild distress
   sad: -2, tired: -2, stressed: -2, worried: -2, alone: -2,
   angry: -2, frustrated: -2, exhausted: -2, overwhelmed: -2, lost: -2,
@@ -32,6 +38,34 @@ const POSITIVE_KEYWORDS: Record<string, number> = {
   good: 1, nice: 1, okay: 1, fine: 1, cool: 1, chill: 1,
 };
 
+const UI_TEXT_PATTERNS = [
+  /^sponsored$/i,
+  /^paid partnership$/i,
+  /^learn more$/i,
+  /^shop now$/i,
+  /^sign up$/i,
+  /^download$/i,
+  /^install now$/i,
+  /^book now$/i,
+  /^get quote$/i,
+  /^order now$/i,
+  /^watch more$/i,
+  /^apply now$/i,
+  /^contact us$/i,
+  /^visit site$/i,
+  /^see more$/i,
+  /^reply$/i,
+  /^send message$/i,
+];
+
+interface KeywordPattern {
+  weight: number;
+  pattern: RegExp;
+}
+
+const DISTRESS_PATTERNS = compileKeywordPatterns(DISTRESS_KEYWORDS);
+const POSITIVE_PATTERNS = compileKeywordPatterns(POSITIVE_KEYWORDS);
+
 export function analyseText(text: string): number {
   if (!text || text.trim().length === 0) {
     return 50; // Neutral when no text present
@@ -42,18 +76,18 @@ export function analyseText(text: string): number {
   let matchCount = 0;
 
   // Check distress keywords
-  for (const [keyword, weight] of Object.entries(DISTRESS_KEYWORDS)) {
-    if (lower.includes(keyword)) {
+  for (const { pattern, weight } of DISTRESS_PATTERNS) {
+    if (pattern.test(lower)) {
       totalScore += weight;
-      matchCount++;
+      matchCount += 1;
     }
   }
 
   // Check positive keywords
-  for (const [keyword, weight] of Object.entries(POSITIVE_KEYWORDS)) {
-    if (lower.includes(keyword)) {
+  for (const { pattern, weight } of POSITIVE_PATTERNS) {
+    if (pattern.test(lower)) {
       totalScore += weight;
-      matchCount++;
+      matchCount += 1;
     }
   }
 
@@ -75,7 +109,51 @@ export function extractText(viewer: HTMLElement): string {
     'span[dir="auto"], div[dir="auto"]'
   );
   return Array.from(textElements)
+    .filter((el) => isVisibleTextElement(el as HTMLElement))
+    .filter((el) => !el.closest("button, a[role='button'], [role='button']"))
     .map((el) => el.textContent?.trim() || "")
+    .filter((text) => !UI_TEXT_PATTERNS.some((pattern) => pattern.test(text)))
     .filter((t) => t.length > 0)
     .join(" ");
+}
+
+function isVisibleTextElement(element: HTMLElement): boolean {
+  const rect = element.getBoundingClientRect();
+  if (rect.width < 1 || rect.height < 1) {
+    return false;
+  }
+
+  const style = window.getComputedStyle(element);
+  if (
+    style.display === "none" ||
+    style.visibility === "hidden" ||
+    Number.parseFloat(style.opacity || "1") < 0.05
+  ) {
+    return false;
+  }
+
+  const intersectionWidth =
+    Math.min(rect.right, window.innerWidth) - Math.max(rect.left, 0);
+  const intersectionHeight =
+    Math.min(rect.bottom, window.innerHeight) - Math.max(rect.top, 0);
+
+  return intersectionWidth > 8 && intersectionHeight > 8;
+}
+
+function compileKeywordPatterns(
+  keywords: Record<string, number>
+): KeywordPattern[] {
+  return Object.entries(keywords).map(([keyword, weight]) => ({
+    weight,
+    pattern: createKeywordPattern(keyword),
+  }));
+}
+
+function createKeywordPattern(keyword: string): RegExp {
+  const escaped = escapeRegex(keyword.toLowerCase());
+  return new RegExp(`(^|[^a-z])${escaped}($|[^a-z])`);
+}
+
+function escapeRegex(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
